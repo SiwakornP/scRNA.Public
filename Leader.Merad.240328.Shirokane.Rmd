@@ -1,0 +1,754 @@
+---
+title: "Leader Merad NSCLC scRNA-seq"
+author: "Siwakorn"
+date: '2024-03-28'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+#Library
+```{r}
+library(Seurat)
+library(tidyverse)
+library(harmony)
+library(gtools)
+library(msigdbr)
+```
+
+#Instant command
+```{r}
+Clustering1 <- function(tmp,dim=30,res=0.3,spread =1, dist = 1,group = "orig.ident" ){
+      DefaultAssay(tmp) = "RNA"
+      tmp <- NormalizeData(tmp) %>% FindVariableFeatures() %>% ScaleData() %>% RunPCA(verbose = FALSE)
+      tmp <- RunHarmony(tmp, group.by.vars = group)
+      tmp <- RunUMAP(tmp, reduction = "harmony", dims = 1:dim, min.dist = dist, spread = spread )
+      tmp <- FindNeighbors(tmp, reduction = "harmony", dims = 1:dim) %>% FindClusters(resolution = res)
+      return(tmp)
+}
+PTGER4.Group = function(Obj1, Identity = "Identity.Celltype", Batch = "Batch.scRNA"){
+      df = data.frame()
+      Cluster = unique(Obj1[[]][,Identity]) %>% as.character()
+      Idents(Obj1) = Identity
+      for(i in Cluster){
+            Obj2 = subset(Obj1, idents = i)
+            AllBatch = unique(as.character(Obj2[[]][,Batch] ))
+            for(j in AllBatch ){
+                  Idents(Obj2) = Batch
+                  Obj3 = subset(Obj2, idents = j)
+                  tmp = FetchData(Obj3, vars = "PTGER4",slot="data") %>% arrange(desc(PTGER4))
+                  tmpA = filter(tmp,PTGER4 == 0)
+                  tmp = filter(tmp,PTGER4 != 0)
+                  if(nrow(tmpA) > 0 ) {
+                        tmpA$PTGER4.Group = "Undetected"
+                        } 
+                  if(nrow(tmp) > 0 ) {
+                        tmp$PTGER4.Group = "Low"
+                        tmp$PTGER4.Group[1:round(nrow(tmp)/3)] = "High" 
+                        tmp$PTGER4.Group[(round(nrow(tmp)/3)+1):(round(nrow(tmp)/3*2))] = "Intermediate"
+                        }
+                  tmp = rbind(tmp,tmpA)
+                  if(nrow(tmp) > 0 ) {
+                        tmp$Cluster = i
+                        tmp$Batch = j
+                        }
+                  print(paste0(i," ",j, " ... ", (nrow(tmp) == ncol(Obj3)  ) ) )
+                  df = rbind(df,as_tibble(tmp,rownames="CB"))
+            }
+      }
+      print(paste0("Validation : ", nrow(df) == nrow(Obj1[[]]) ) )
+      tmp2 = df$PTGER4.Group
+      names(tmp2) = df$CB
+      return(tmp2)
+}
+
+GeneGroup <- function(df,GeneList ){
+  tmp = data.frame(matrix(ncol = (ncol(df)+1), nrow = 0))
+  colnames(tmp) = c(colnames(df),"Set")
+  for(i in names(GeneList)){
+      tmp1 = filter(df, Genes %in% GeneList[[i]] ) %>% filter(!Genes %in% tmp[,"Genes"])
+      tmp1$Set = i
+      tmp = rbind(tmp,tmp1)
+  }
+  tmp$Set = factor(tmp$Set, levels = names(GeneList))
+  tmp$Genes = factor(tmp$Genes, levels = unique(unlist(GeneList)) )
+  return(tmp)
+}
+
+pCat = function(df, pval.use = "p_val_adj"){
+  df$pval_cat = ">0.05"
+  df$pval_cat[(df[,pval.use] < 0.05)] = "<0.05"
+  df$pval_cat[(df[,pval.use] < 0.01)] = "<0.01"
+  df$pval_cat[(df[,pval.use] < 0.001)] = "<0.001"
+  df$pval_cat = factor(df$pval_cat, levels = c(">0.05","<0.05","<0.01","<0.001"))
+  return(df)
+}
+
+find <- function(object,gene){
+      rownames(object)[grep(gene,rownames(object) )] %>% mixedsort()
+}
+
+find2 <- function(Genes,SearchGenes){
+      Genes[grep(SearchGenes,Genes )] %>% mixedsort()
+}
+
+
+dir = "~/RStudioProject/scRNA/Fig/231229"
+dir = "~/Library/CloudStorage/OneDrive-Personal/Documents_Onedrive/RStudioProject/scRNA.Public/Merad.Human/Fig/240330/"
+dir.create(dir)
+PNG <- function(x,w = 6, h = 6.3, r =400){
+      png(filename = paste0(dir,"/",x,".png" ),
+          width = w, 
+          height = h, 
+          units = "in", 
+          res = r)
+}
+
+scale_ig = scale_color_gradientn(colours = c("grey","#120078","#9d0191","#fd3a69","#fecd1a"), values = c(0,0.1,0.3,0.6,1))
+scale_viridis = scale_color_gradientn(colours = c("grey",c(viridis::viridis(6))[1:5],"#fecd1a" ) )
+
+FP_head = theme(plot.title = element_text(size = 20, face= "bold", colour = "firebrick") )
+scale_orange = scale_color_gradientn(colours = c("grey","yellow","orange","red"), values = c(0,0.1,0.5,1))
+Dot_axis90A = theme(axis.text.x =  element_text(size = 15, angle = 90, hjust = 1, vjust = 0.3,color = "black",face ="italic"), axis.text.y = element_text(size = 15,color = "black")) 
+Dot_axis90B = theme(axis.text.x =  element_text(size = 15, angle = 90, hjust = 1, vjust = 0.3,color = "black"), axis.text.y = element_text(size = 15,color = "black")) 
+```
+
+#GeneSet
+```{r}
+Ref <- readRDS("~/Library/CloudStorage/OneDrive-Personal/Documents_Onedrive/RStudioProject/scRNA/Ref/Ref_Mouse-Human.230828.rds")
+HGenes = Ref$hmart$hgnc_symbol %>% mixedsort()
+
+fgsea_sets_H  <- msigdbr(species = "human", category = "H" ) %>% split(x = .$gene_symbol, f = .$gs_name)
+fgsea_sets_c2 <- msigdbr(species = "human", category = "C2" ) %>% split(x = .$gene_symbol, f = .$gs_name)
+fgsea_sets_c5 <- msigdbr(species = "human", category = "C5" ) %>% split(x = .$gene_symbol, f = .$gs_name)
+fgsea_sets = append(fgsea_sets_H, fgsea_sets_c2)
+
+
+GeneSet$DE$ETC = list(
+  "Complex I" = find2(HGenes, "^NDUF"),
+  "Complex II" = find2(HGenes, "^SDH"),
+  "Complex III" = c(find2(HGenes, "^UQC"),find2(HGenes,"^CYC")),
+  "Complex IV" = find2(HGenes,"^COX"),
+  "Complex V" = find2(HGenes, "^ATP")
+)
+
+GeneSet$DE$ETC.Ref = list(
+  "Complex I" = fgsea_sets$WP_MITOCHONDRIAL_COMPLEX_I_ASSEMBLY_MODEL_OXPHOS_SYSTEM,
+  "Complex II" = fgsea_sets$WP_MITOCHONDRIAL_COMPLEX_II_ASSEMBLY,
+  "Complex III" = fgsea_sets$WP_MITOCHONDRIAL_COMPLEX_III_ASSEMBLY,
+  "Complex IV" = fgsea_sets$WP_MITOCHONDRIAL_COMPLEX_IV_ASSEMBLY,
+  "Complex V" = fgsea_sets_c5$GOCC_PROTON_TRANSPORTING_ATP_SYNTHASE_COMPLEX
+)
+GeneSet$DE$ETC.Ref2 = list(
+  "Complex I" = intersect(GeneSet$DE$ETC$`Complex I`, fgsea_sets$WP_MITOCHONDRIAL_COMPLEX_I_ASSEMBLY_MODEL_OXPHOS_SYSTEM),
+  "Complex II" = intersect(GeneSet$DE$ETC$`Complex II` ,fgsea_sets$WP_MITOCHONDRIAL_COMPLEX_II_ASSEMBLY),
+  "Complex III" = intersect(GeneSet$DE$ETC$`Complex III`, fgsea_sets$WP_MITOCHONDRIAL_COMPLEX_III_ASSEMBLY),
+  "Complex IV" = intersect(GeneSet$DE$ETC$`Complex IV`, fgsea_sets$WP_MITOCHONDRIAL_COMPLEX_IV_ASSEMBLY),
+  "Complex V" = intersect(GeneSet$DE$ETC$`Complex V`  ,fgsea_sets_c5$GOCC_PROTON_TRANSPORTING_ATP_SYNTHASE_COMPLEX)
+)
+GeneSet$DE$ETC.Ribosome = c(GeneSet$DE$ETC.Ref2,GeneSet$DE$Ribosome)
+
+
+GeneSet$DE$ETC.selected.set = list(
+  "Complex I" = c("NDUFA5","NDUFA6","NDUFA7","NDUFA8","NDUFB5","NDUFB6", "NDUFB8", "NDUFB9" ,"NDUFB10","NDUFB11","NDUFS5","NDUFV2" , "NDUFV3"),
+  "Complex II" = c("SDHAF1","SDHAF2"),
+  "Complex IV" = c("COX4I1","COX5A", "COX5B" , "COX6B1" ),
+  "Complex V" = c("ATP5F1C", "ATP5F1D", "ATP5F1EP2" ,"ATP5MC1","ATP5MC2" ,"ATP5PD","ATP5PF","ATP5MF","ATP5ME" ,"ATP5IF1", "ATP6V1F","ATP6V1G1" )
+)
+
+GeneSet$DE$ETC.selected = c("NDUFA5","NDUFA6","NDUFA7","NDUFA8","NDUFB5","NDUFB6", "NDUFB8", "NDUFB9" ,"NDUFB10","NDUFB11","NDUFS5","NDUFV2" , "NDUFV3" ,"COX4I1","COX5A", "COX5B" , "COX6B1", "ATP5F1C", "ATP5F1D", "ATP5F1EP2" ,"ATP5MC1","ATP5MC2" ,"ATP5PD","ATP5PF","ATP5MF","ATP5ME" ,"ATP5IF1", "ATP6V1F","ATP6V1G1" )
+
+GeneSet$DE$ETC.selected2 = c("NDUFA6","NDUFA7","NDUFB5","SDHAF1","SDHAF2","COX5A","COX5B","COX6A1","ATP5FA1","ATP5F1C","ATP5MF" )
+
+
+GeneSet$DE$Ribosome = list(
+  "RP large subunit" = find2(HGenes, "^RPL"),
+  "RP small subunit" = find2(HGenes, "^RPS")
+)
+
+GeneSet$DE$ISG = list("ISG"= find2(HGenes,"ISG"),
+                      "IFI" = find2(HGenes,"IFI") )
+
+GeneSet$DE$LLC = c("IL1B","IL1A","HIF1A","PTGS1","PTGS2","VEGFA")
+
+GeneSet$DE$Common <- c("FOS","FOSB","FOSL2","JUN","JUNB","JUND","ATF3","EGR1","ETS1","NR3C1","ATF7IP","ACTB","ACTG1","ACTR2","CCL3","CCL4","CCL3L1","CCL4L2","CCL5","CXCL13","CXCR4","XCL1","XCL2","HMGA1","HMGB1","HMGB2","HMGN1","HMGN3","NR4A1","NR4A2","NR4A3","NFKBIZ","NFKB1","PSMA1","PSMA2","PSMA3","PSMA4","PSMA5","PSMA6","PSMA7","PSMB1","PSMB2","PSMB3","PSMB4","PSMB5","PSMB6","PSMB7","PSMB8","PSMB9","PSMC1","PSMC2","PSMC3", "PSMD7","PSMD8","PSMD9","PSME1","PSME2","PSME3" )
+GeneSet$DE$Chemokine = c(rownames(BOC)[grep("^CCL",rownames(BOC))],
+                                    rownames(BOC)[grep("^CXC",rownames(BOC))],
+                                    rownames(BOC)[grep("^XCL",rownames(BOC))]
+                                    ) %>% sort()
+GeneSet$DE$Glycolysis = c("HK1","HK2","HK3","ENO1","ENO2","ALDOC","PGM1","PGM2","PGM3","GALE","GALM","PYGL","SLC2A1","SLC2A2","SLC2A3")
+GeneSet$DE$Glycolysis2 = c(GeneSet$DE$Glycolysis, fgsea_sets$WP_AEROBIC_GLYCOLYSIS, fgsea_sets$MOOTHA_GLYCOLYSIS, fgsea_sets$REACTOME_GLYCOLYSIS) %>% unique() %>% sort()
+GeneSet$DE$Glycolysis = c("HK1","ENO1","LDHA","PGAM1","PFKP","PKM","TPI1")
+
+GeneSet$DE$CD8.Overview = list(
+  "Activation" = c("CD44","CD69","FOS","FOSB","JUN","JUNB","JUND","NFATC1","IFNG"),
+  "TCR" = c("CD3D","CD3G","CD27","CD28"),
+  "NFKB" = c("NFKB1","NFKBIZ","NR4A1","NR4A2","NR4A3","RELB"), 
+  "IL2-signaling" = c("IL2RA","IL2RB","IL2RG","STAT5A","STAT5B"),
+  "ETC" = c(GeneSet$DE$MTC1[1:3],GeneSet$DE$MTC23[1:3],GeneSet$DE$MTC4[1:3],GeneSet$DE$MTC5[49:52]), 
+  "Ribosome" = GeneSet$DE$Ribosome[1:6], 
+  "Proteosome" = GeneSet$DE$Proteosome[11:15],
+  "-" = c("IFNG","TGFB1","HLA-DRA","HLA-DRB1","DNMT1","JARID1B","CTNNB1") )
+
+GeneSet$DE$CD8.Overview2 = list(
+  "Activation" = c("CD44","CD69","FOS","FOSB","JUN","JUNB","JUND","NFATC1","IFNG"),
+  "NFKB" = c("NFKB1","NFKBIZ","NR4A1","NR4A2","NR4A3","RELB"), 
+  "TCR" = c("CD3D","CD3G","CD27","CD28"),
+  "IL2-signaling" = c("IL2RA","IL2RB","IL2RG","STAT5A","STAT5B"),
+  "OXPHOS" = GeneSet$DE$ETC.selected2,
+  "Ribosome" = c("RPS2","RPS3","RPS11","RPL3","RPL11","RPL19") )
+
+GeneSet$DE$TIM.Overview = list(
+  "AP-1" = c("FOS","FOSB","FOSL1","FOSL2","JUN","JUNB","JUND"),
+  "NFKB" = c("NFKB1","NKFB2","NFKBIZ","NR4A1","NR4A2","NR4A3","RELB","RELA"), 
+  "ETC" = c(GeneSet$DE$MTC1[1:3],GeneSet$DE$MTC23[1:3],"UQCC2","UQCC3",GeneSet$DE$MTC4[13:16],GeneSet$DE$MTC5[49:52]), 
+  "Ribosome" = GeneSet$DE$Ribosome[3:8], 
+  "Proteosome" = GeneSet$DE$Proteosome[11:15])
+
+GeneSet$DE$TIM.Overview2 = list(
+  "AP-1" = c("FOS","FOSB","FOSL1","FOSL2","JUN","JUNB","JUND"),
+  "NFKB" = c("NFKB1","NKFB2","NFKBIZ","NR4A1","NR4A2","NR4A3","RELB","RELA"), 
+  "ETC" = GeneSet$DE$ETC.selected2,
+  "Ribosome" = c("RPS2","RPS3","RPS11","RPL3","RPL11","RPL19") )
+
+GeneSet$DE$Bonavita = list(
+  "Promoting" = c("PTGS2","IL6","CXCL1","CXCL2","CSF3","IL1A","IL1B","CCL2","VEGFA"),
+  "Inhibiting" = c("IL12A","IL12B","CXCL9","CXCL10","CCL5","STAT1")
+)
+
+GeneSet$DE$PGE2 = c("PTGS1","PTGS2","PTGER2","PTGER4","PTGES","PTGES2","PTGES3")
+```
+
+#Initiation
+```{r}
+meta <- read.csv("/rshare1/ZETTAI_path_WA_slash_home_KARA/home/siwakorn/Merad.Human/GSE154826_sample_annots.csv")
+meta = filter(meta, Species == "human")
+
+SampleID = meta$sample_ID
+names(SampleID) = paste0("amp_batch_ID_",meta$amp_batch_ID) 
+PatientID = meta$patient_ID
+names(PatientID) = paste0("amp_batch_ID_",meta$amp_batch_ID) 
+oldlib = meta$old_lib_name
+names(oldlib) = paste0("amp_batch_ID_",meta$amp_batch_ID) 
+tissue = meta$tissue
+names(tissue) = paste0("amp_batch_ID_",meta$amp_batch_ID) 
+Disease = meta$disease
+names(Disease) = paste0("amp_batch_ID_",meta$amp_batch_ID) 
+Prep = meta$prep
+names(Prep) = paste0("amp_batch_ID_",meta$amp_batch_ID) 
+LibPrime = meta$prime
+names(LibPrime) = paste0("amp_batch_ID_",meta$amp_batch_ID) 
+LibChem = meta$library_chemistry
+names(LibChem) = paste0("amp_batch_ID_",meta$amp_batch_ID) 
+ID = paste0("amp_batch_ID_",meta$amp_batch_ID) %>% unique() %>% mixedsort()
+
+RNA = list()
+RNA2 = list()
+HTO = list()
+for(i in ID ){
+      print(i)
+      tmp = paste0("/rshare1/ZETTAI_path_WA_slash_home_KARA/home/siwakorn/Merad.Human/Counts/GSE154826_",i)
+      tmp = Read10X(data.dir = tmp  )
+      if(is.list(tmp) ){
+        HTO[[i]] = tmp$Custom
+        tmp = tmp$`Gene Expression`
+        RNA2[[i]] <- CreateSeuratObject(counts = tmp, min.cells = 3, min.features = 200)
+        RNA2[[i]]$orig.ident = i
+        RNA2[[i]]$Sample_ID = SampleID[i] %>% as.character()
+        RNA2[[i]]$Patient_ID = PatientID[i] %>% as.character()
+        RNA2[[i]]$OldLib_ID = oldlib[i] %>% as.character()
+        RNA2[[i]]$Tissue = tissue[i] %>% as.character()
+        RNA2[[i]]$Disease = Disease[i] %>% as.character()
+        RNA2[[i]]$Prep = Prep[i] %>% as.character()
+        RNA2[[i]]$LibraryKit = paste0(LibPrime[i],"'_", LibChem[i] ) %>% as.character()
+        RNA2[[i]][["percent.mt"]] <- PercentageFeatureSet(RNA2[[i]], pattern = "^MT-")
+        RNA2[[i]]$CB.original = colnames(RNA2[[i]])
+        RNA2[[i]]$CB.new = gsub("-1",paste0("_",SampleID[i]),RNA2[[i]]$CB.original)
+        RNA2[[i]] <- RenameCells(RNA2[[i]], new.names = RNA2[[i]]$CB.new )
+      } else{
+          RNA[[i]] <- CreateSeuratObject(counts = tmp, min.cells = 3, min.features = 200)
+          RNA[[i]]$orig.ident = i
+          RNA[[i]]$Sample_ID = SampleID[i] %>% as.character()
+          RNA[[i]]$Patient_ID = PatientID[i] %>% as.character()
+          RNA[[i]]$OldLib_ID = oldlib[i] %>% as.character()
+          RNA[[i]]$Tissue = tissue[i] %>% as.character()
+          RNA[[i]]$Disease = Disease[i] %>% as.character()
+          RNA[[i]]$Prep = Prep[i] %>% as.character()
+          RNA[[i]]$LibraryKit = paste0(LibPrime[i],"'_", LibChem[i] ) %>% as.character()
+          RNA[[i]][["percent.mt"]] <- PercentageFeatureSet(RNA[[i]], pattern = "^MT-")
+          RNA[[i]]$CB.original = colnames(RNA[[i]])
+          RNA[[i]]$CB.new = gsub("-1",paste0("_",SampleID[i]),RNA[[i]]$CB.original)
+          RNA[[i]] <- RenameCells(RNA[[i]], new.names = RNA[[i]]$CB.new )
+        }
+      
+}
+
+#saveRDS(RNA, file = "/rshare1/ZETTAI_path_WA_slash_home_KARA/home/siwakorn/Merad.Human/Merad.RNA.240329.rds")
+#saveRDS(RNA2, file = "/rshare1/ZETTAI_path_WA_slash_home_KARA/home/siwakorn/Merad.Human/Merad.RNA2.240329.rds")
+#saveRDS(HTO, file = "/rshare1/ZETTAI_path_WA_slash_home_KARA/home/siwakorn/Merad.Human/Merad.HTO.240329.rds")
+RNA2 = 0
+HTO = 0
+
+Merad = merge(x = RNA[[1]],
+            y = RNA[2:length(RNA)],
+            merge.data = TRUE)
+RNA = 0
+DefaultAssay(Merad) = "RNA"
+Merad = subset(Merad, percent.mt < 10)
+Merad = NormalizeData(Merad) 
+Merad = Merad %>% FindVariableFeatures() 
+Merad = Merad %>% ScaleData() 
+Merad = Merad %>% RunPCA(verbose = FALSE)
+Merad = RunHarmony(Merad, group.by.vars = "orig.ident")
+Merad <- RunUMAP(Merad, reduction = "harmony", dims = 1:30, min.dist = 1, spread =1 )
+Merad <- FindNeighbors(Merad, reduction = "harmony", dims = 1:30) %>% FindClusters(resolution = 0.3)
+#saveRDS(Merad, file = "/rshare1/ZETTAI_path_WA_slash_home_KARA/home/siwakorn/Merad.Human/Merad.Mt10.240329.rds")
+
+tmp = Merad[[]] %>% filter(Tissue %in% c("Tumor") )
+Merad = subset(Merad, orig.ident %in% tmp$orig.ident )
+Merad = Clustering1(Merad,group = "orig.ident")
+#saveRDS(Merad, file = "/rshare1/ZETTAI_path_WA_slash_home_KARA/home/siwakorn/Merad.Human/Merad.TME.2.240329.rds")
+Merad = JoinLayers(Merad)
+```
+#Celltype annotation
+```{r}
+tmp = FindAllMarkers(Merad, max.cells.per.ident = 500)
+#MeradDF = list()
+MeradDF$Allmarker = tmp
+
+tmp %>% group_by(cluster) %>% top_n(n=20, wt = avg_log2FC)
+
+DotPlot(Merad,features = c("PTPRC","MKI67","CD3D","CD8A","FOXP3","NKG7","CSF1R","MS4A1","IGKC","CSF3R","CD19","EPCAM","COL6A2","KRT18","PECAM1","HDC","XCR1","LILRA4","CLEC10A","CCR7")) +Dot_axis90A 
+for(i in c("PTPRC","MKI67","CD3D","CD8A","FOXP3","NKG7","CSF1R","MS4A1","IGKC","CSF3R","CD19","EPCAM","COL6A2","KRT18","PECAM1","HDC")){
+      print(FeaturePlot(Merad, i))
+}
+
+Merad$Cluster_primary = Idents(Merad)
+Merad = RenameIdents(Merad,
+      '0' = "TNK",
+      '1' = "TNK",
+      '2' = "TIM",
+      '3' = "B_cell",
+      '4' = "Plasma_cell",
+      '5' = "TNK",
+      '13' = "cDC1",
+      '14' = "pDC",
+      '8' = "Epithelial",
+      '7' = "TIM",
+      '9' = "Dividing_cell",
+      '10' = "Mast_cell",
+      '16' = "Epithelial",
+      '11' = "Endothelial",
+      '12' = "Fibroblast",
+      '15' = "Plasma_cell",
+      '6' = "LQ",
+      '17' = "LQ"
+      )
+Merad$Identity.primary = Idents(Merad)
+saveRDS(Merad, file = "/rshare1/ZETTAI_path_WA_slash_home_KARA/home/siwakorn/Merad.Human/Merad.TME.2.240329.rds")
+DimPlot(Merad)
+```
+
+##TNK
+```{r}
+TNK = subset(Merad, idents = "TNK")
+TNK = Clustering1(TNK,group = "orig.ident")
+DimPlot(TNK,label = T)
+for(i in c("PTPRC","MKI67","CD3D","CD4","CD8A","FOXP3","NKG7")){
+      print(FeaturePlot(TNK, i))
+}
+TNK = RenameIdents(TNK,
+                   '6' = "NK",
+                  '1' = "T_CD8",
+                  '0' = "T_CD4",
+                  '2' = "T_CD4",
+                  '3' = "T_CD8",
+                  '4' = "T_FOXP3",
+                  '5' = "T_CD4",
+                  '7' = "T_CD4",
+                  '8' = "T_CD4",
+                  '9' = "LQ",
+                  '10' = "T_CD4"
+                   )
+TNK$Identity.Celltype = Idents(TNK)
+DimPlot(TNK)
+```
+
+##TIM (omitted)
+```{r}
+TIM = subset(Merad, idents = "TIM")
+TIM = Clustering1(TIM,group = "orig.ident")
+DimPlot(TIM)
+for(i in c("PTPRC","CSF1R","CSF3R","SPP1","VCAN","C1QA","S100A8","PTGS1","PTGS2")){
+      print(FeaturePlot(TIM, i))
+}
+```
+
+##AddMetadata
+```{r}
+tmp1 = Merad[[]] %>% dplyr::select(Identity.primary) %>% filter(!Identity.primary == "TNK")
+tmp1$Identity.Celltype = tmp1$Identity.primary
+
+tmp2 = TNK[[]] %>% dplyr::select(Identity.primary,Identity.Celltype)
+tmp = rbind(tmp1,tmp2)
+
+tmp1 = tmp$Identity.Celltype 
+names(tmp1) = rownames(tmp)
+
+Merad = AddMetaData(Merad,tmp1, col.name = "Identity.Celltype")
+Merad$Identity.Celltype = factor(Merad$Identity.Celltype, levels = c(levels(tmp1)[13:16],levels(tmp1)[2:12] ))
+Idents(Merad) = Merad$Identity.Celltype
+```
+
+#Remove LQ
+```{r}
+Merad <- readRDS("/rshare1/ZETTAI_path_WA_slash_home_KARA/home/siwakorn/Merad.Human/Merad.TME.Celltype.240329.rds")
+
+DimPlot(Merad,label=T)
+tmp = levels(Idents(Merad)) %>% setdiff("LQ")
+Merad = subset(Merad, idents = tmp)
+Merad = Clustering1(Merad)
+saveRDS(Merad, "/rshare1/ZETTAI_path_WA_slash_home_KARA/home/siwakorn/Merad.Human/Merad.rmLQ.240329.rds"  )
+Idents(Merad) = Merad$Identity.Celltype
+DimPlot(Merad,label=T)
+```
+
+#PTGER4 Group
+```{r}
+Merad2 = subset(Merad, idents = c("T_CD4","T_CD8","TIM"))
+tmp = PTGER4.Group(Merad2,Identity = "Identity.Celltype",Batch = "orig.ident" )
+Merad2 = AddMetaData(Merad2,tmp,"PTGER4.Group.Celltype")
+Merad2$PTGER4.Group.Celltype = factor(Merad2$PTGER4.Group.Celltype, levels = c("Undetected","Low","Intermediate","High"))
+
+saveRDS(Merad, file = "/rshare1/ZETTAI_path_WA_slash_home_KARA/home/siwakorn/Merad.Human/Merad.TME.Celltype.240329.rds")
+saveRDS(Merad2, file = "/rshare1/ZETTAI_path_WA_slash_home_KARA/home/siwakorn/Merad.Human/Merad.TME.Some.Celltype.240329.rds")
+
+```
+#DE
+```{r}
+library(Seurat)
+library(harmony)
+library(tidyverse)
+library(gtools)
+options(future.globals.maxSize = 100000 * 1024^2)
+
+Clustering1 <- function(tmp,dim=30,res=0.3,spread =1, dist = 1,group = "orig.ident" ){
+      DefaultAssay(tmp) = "RNA"
+      tmp <- NormalizeData(tmp) %>% FindVariableFeatures() %>% ScaleData() %>% RunPCA(verbose = FALSE)
+      tmp <- RunHarmony(tmp, group.by.vars = group)
+      tmp <- RunUMAP(tmp, reduction = "harmony", dims = 1:dim, min.dist = dist, spread = spread )
+      tmp <- FindNeighbors(tmp, reduction = "harmony", dims = 1:dim) %>% FindClusters(resolution = res)
+      return(tmp)
+}
+
+
+FullDE <- function(Obj,Group = "PTGER4.Group.Celltype2", Batch = "ID",A = "High", B = "Low"){
+      DE = list()
+      Idents(Obj) = Batch
+      for(i in unique(Obj[[]][,Batch]) ){
+            tmp = subset(Obj, idents = i)
+            print(paste0(i," : ", ncol(tmp), " Cells"))
+            tryCatch({
+                  Idents(tmp) = Group
+                  DE[[i]] = FindMarkers(tmp,ident.1 = A, ident.2 = B, logfc.threshold = 0,min.pct =0.01 )
+            }, error = function(e){print(e)})
+      }
+      #Sum table
+      df = data.frame()
+      for(i in names(DE) ){
+            tmp = DE[[i]] %>% as_tibble(rownames = "Genes") %>% dplyr::select(Genes, avg_log2FC)
+            tmp$Datasets = i
+            df = rbind(df,tmp)
+      }
+      df = spread(df, Genes, avg_log2FC) %>% as.data.frame()
+      rownames(df) = df$Datasets
+      df = dplyr::select(df,-Datasets)
+      df2 = matrix(nrow = ncol(df),ncol=0) %>% data.frame()
+      rownames(df2) = colnames(df)
+      df2$Upregulation = "NA"
+      df2$Downregulation = "NA"
+      for(i in colnames(df)){
+            tmp = df[,i] > 0 
+            df2[i,"Upregulation"] = sum(tmp)
+            tmp = df[,i] < 0 
+            df2[i,"Downregulation"] = sum(tmp)
+      }
+      df2$Upregulation = as.numeric(df2$Upregulation)
+      df2$Downregulation = as.numeric(df2$Downregulation)
+      DE[["FoldChange.Table"]] = df
+      DE[["FoldChange.Sum"]] = df2
+      return(DE)
+}
+
+Merad = readRDS(file = "/rshare1/ZETTAI_path_WA_slash_home_KARA/home/siwakorn/Merad.Human/Merad.TME.Some.Celltype.240329.rds")
+
+DE = list()
+Idents(Merad) = Merad$Identity.Celltype
+for(i in c("TIM","T_CD4","T_CD8") ){
+      print(i)
+      tmp = subset(Merad, idents = i)
+      DE[[i]] = FullDE(tmp, Group = "PTGER4.Group.Celltype", Batch = "orig.ident")
+      saveRDS(DE, "/rshare1/ZETTAI_path_WA_slash_home_KARA/home/siwakorn/Merad.Human/DE.Merad.Some.PTGER4.Celltype.240329.rds" )
+      
+}
+
+saveRDS(DE, "/rshare1/ZETTAI_path_WA_slash_home_KARA/home/siwakorn/Merad.Human/DE.Merad.Some.PTGER4.Celltype.240329.rds"  )
+
+```
+##Convert
+```{r}
+DE <- readRDS("~/Library/CloudStorage/OneDrive-Personal/Documents_Onedrive/RStudioProject/scRNA.Public/Merad.Human/DE.Merad.Some.PTGER4.Celltype.240329.rds")
+df = data.frame()
+for(i in names(DE)){
+  tmp = names(DE[[i]]) %>% setdiff(c("FoldChange.Table","FoldChange.Sum") )
+  for(j in tmp ){
+      df1 = DE[[i]][[j]] %>% as_tibble(rownames = "Genes")
+      df1$Cluster = i
+      df1$Dataset = j
+      df = rbind(df,df1)
+      }
+}
+DE$df = df
+saveRDS(DE, "~/Library/CloudStorage/OneDrive-Personal/Documents_Onedrive/RStudioProject/scRNA.Public/Merad.Human/DE.Merad.Some.PTGER4.Celltype.converted.240402.rds"  )
+```
+
+###Sample sorting
+```{r}
+CD8 = subset(Merad, idents = "T_CD8")
+DotPlot(CD8,features = GeneSet$DE$ETC.Ref2) + Dot_axis90A
+Idents(CD8) = CD8$orig.ident
+VlnPlot(CD8,"percent.mt")+NoLegend()
+tmp1 =table(CD8$orig.ident,CD8$PTGER4.Group.Celltype) %>% as.data.frame() %>% spread(Var2, Freq) %>% arrange(Low)
+tmp1$ratio = tmp1$Undetected/tmp1$Low
+tmp1 = arrange(tmp1,ratio)
+```
+
+##Heatmap
+```{r}
+j= "T_CD8"
+selected.cluster = j
+for(i in c("ETC.Ref2","Ribosome") ){
+  selected.genes = unlist( GeneSet$DE[[i]] ) %>% unique()
+  df1 = filter(df, Genes %in% selected.genes )  %>% filter(Cluster %in% selected.cluster)
+  #df1$Dataset = factor(df1$Dataset, levels =tmp1$Var1)
+  df$Dataset = factor(df$Dataset, levels = mixedsort(unique(df$Dataset)))
+  df1 = pCat(df1,"p_val_adj")
+  df1 = GeneGroup(df1, GeneSet$DE[[i]] )
+  Fsize = 6
+  a = max(abs(df1$avg_log2FC))+0.2 
+  plot = ggplot(df1, aes(y = Dataset , x = Genes  ) ) + 
+    facet_grid(Cluster ~ Set, scales = "free", space="free", switch = "y") + 
+    theme_classic() + 
+    Dot_axis90A + 
+    ggtitle(i)+
+    geom_tile(color = "white",aes(fill =avg_log2FC)) +  
+#    scale_fill_gradientn(colours = Col.HiLow.7Shades,
+#                         values =  c( 0,0.43,0.5,0.57,  a ),                                 
+#                         limits = c(-a,a) ) +
+    scale_fill_gradientn(colours = Col.HiLow.9Shades,
+                         values =  c( 0,0.2,0.35,0.45,0.5,0.55,0.65,0.8,  1 ),   
+                         
+                         limits = c(-2,2) ) +
+    theme(plot.title = element_blank(),
+          axis.text.x = element_text(size =Fsize, family = "Arial", color = "black", face = "italic",angle = 90, hjust =1, vjust =0.3),
+          axis.text.y = element_text(size =Fsize, family = "Arial", color = "black"),
+          axis.line = element_line(colour = 'black', size = 0.25),
+          axis.ticks = element_line(colour = 'black', size = 0.15),
+          axis.ticks.length = unit(0.05,"cm"),
+          axis.title = element_blank(), 
+          strip.text.y = element_blank(),
+          strip.text.x.top = element_text(size =Fsize, family = "Arial",colour = "black",
+                                          margin = margin(t = 0.1, r = 0, b = 0.1, l = 0, unit = "cm") ),
+          strip.background = element_rect(fill = "white",linewidth = 0.35),
+          strip.background.y =  element_blank(),
+          strip.placement = "outside",
+          legend.key.size = unit(0.1, 'in'),
+                        legend.title = element_text(size = Fsize),
+                        legend.text = element_text(size=Fsize-1),
+          
+          plot.margin = margin(t = 0, r = 0, b = 0, l = 0  ),
+          legend.position = "bottom"
+          )
+                
+  PNG(paste0("Heatmap.Merad.Human.Celltype.",i,".",j,".SortAmpBatchID.Limited"), h = 4, w = 7 )
+  print(plot)
+  dev.off()
+}
+Col.HiLow.9Shades = c("#28198a","#163285","#004e89","#8b99c2","#ffffff","#fce487","#f9c80e","#f86624","#ea3546")
+values =  c( 0,0.2,0.35,0.45,0.5,0.55,0.65,0.8,  1 ),   
+                         breaks = c(-1.5,-1,-0.5,-0.2,0,0.2,0.5,1,1.5),
+                         limits = c(-1.5,1.5) )
+```
+
+
+##DotPlot
+```{r}
+j= "T_CD8"
+selected.cluster = j
+for(i in "ETC.Ref2" ){
+  selected.genes = unlist( GeneSet$DE[[i]] ) %>% unique()
+  df1 = filter(df, Genes %in% selected.genes )  %>% filter(Cluster %in% selected.cluster)
+  df1$Dataset = factor(df1$Dataset, levels =tmp1$Var1)
+  df1 = pCat(df1,"p_val_adj")
+  df1 = GeneGroup(df1, GeneSet$DE[[i]] )
+  Fsize = 6
+  a = max(abs(df1$avg_log2FC))+0.2 
+  plot = ggplot(df1, aes(y = Dataset , x = Genes  ) ) + 
+    facet_grid(Cluster ~ Set, scales = "free", space="free", switch = "y") + 
+    theme_classic() + 
+    Dot_axis90A + 
+    ggtitle(i)+
+    geom_point(aes(color = avg_log2FC, size = pval_cat))+scale_size_manual(values = c(0.7,1,1.4,1.8) ) + 
+    scale_color_gradientn(colours = Col.HiLow.7Shades,
+                         values =  c( 0,0.43,0.5,0.57,  a ),                                 
+                         limits = c(-a,a) ) +
+    theme(plot.title = element_blank(),
+          axis.text.x = element_text(size =Fsize, family = "Arial", color = "black", face = "italic",angle = 90, hjust =1, vjust =0.3),
+          axis.text.y = element_text(size =Fsize, family = "Arial", color = "black"),
+          axis.line = element_line(colour = 'black', size = 0.25),
+          axis.ticks = element_line(colour = 'black', size = 0.15),
+          axis.ticks.length = unit(0.05,"cm"),
+          axis.title = element_blank(), 
+          strip.text.y = element_blank(),
+          strip.text.x.top = element_text(size =Fsize, family = "Arial",colour = "black",
+                                          margin = margin(t = 0.1, r = 0, b = 0.1, l = 0, unit = "cm") ),
+          strip.background = element_rect(fill = "white",linewidth = 0.35),
+          strip.background.y =  element_blank(),
+          strip.placement = "outside",
+          legend.key.size = unit(0.1, 'in'),
+                        legend.title = element_text(size = Fsize),
+                        legend.text = element_text(size=Fsize-1),
+          
+          plot.margin = margin(t = 0, r = 0, b = 0, l = 0  ),
+          legend.position = "bottom"
+          )
+  
+                
+  PNG(paste0("DP.Merad.Human.Celltype.",i,".",j), h = 4, w = 7 )
+  print(plot)
+  dev.off()
+}
+
+p
+
+```
+
+
+#Visualization
+```{r}
+Merad <- readRDS("~/Library/CloudStorage/OneDrive-Personal/Documents_Onedrive/RStudioProject/scRNA.Public/Merad.Human/Merad.rmLQ.240329.rds")
+Idents(Merad) = Merad$Identity.Celltype
+for(i in 1){
+  PNG("DM.Merad.rmLQ.Celltype.240401",w=5,h=5)
+  print(DimPlot(Merad,label =T) + NoLegend())
+  dev.off()
+}
+for(i in c("PTPRC","MKI67","CD3D","CD8A","FOXP3","NKG7","CSF1R","MS4A1","IGKC","CSF3R","CD19","EPCAM","COL6A2","KRT18","PECAM1","HDC")){
+  PNG(paste0("FP.Merad.rmLQ.",i),w=5,h=5)
+  print(FeaturePlot(Merad, i) +NoLegend()  +scale_orange+FP_head)
+  dev.off()
+}
+for(i in c("PTGER1","PTGER2","PTGER3","PTGER4","PTGS1","PTGS2")){
+  PNG(paste0("FP.Merad.rmLQ.",i),w=5,h=5)
+  print(FeaturePlot(Merad, i) +NoLegend()  +scale_orange+FP_head)
+  dev.off()
+}
+
+```
+
+
+```{r}
+Merad <- readRDS("~/Library/CloudStorage/OneDrive-Personal/Documents_Onedrive/RStudioProject/scRNA.Public/Merad.Human/Merad.TME.Some.Celltype.240329.rds")
+Idents(Merad) = Merad$Identity.Celltype
+CD8 = subset(Merad,idents = "T_CD8")
+DimPlot(CD8)
+Idents(CD8) = "orig.ident"
+VlnPlot(CD8, "PTGER4") + NoLegend()
+
+
+for(j in c("T_CD4","T_CD8","TIM")){
+  for(i in c("ETC.Ref2","Ribosome") ){
+    selected.genes = unlist( GeneSet$DE[[i]] ) %>% unique()
+    tmp = subset(Merad,idents = j)
+    Idents(tmp) = tmp$orig.ident
+    PNG(paste0("DP.Expression.",j,".",i),w=18,h=9)
+    print(DotPlot(tmp, features = selected.genes)+scale_ig + Dot_axis90A  )
+    dev.off()
+  }
+}
+
+for(j in c("T_CD4","T_CD8","TIM")){
+  for(i in c("nCount_RNA") ){
+    tmp = subset(Merad,idents = j)
+    Idents(tmp) = tmp$orig.ident
+    PNG(paste0("Merad.Vln.lim.",j,".",i),w=6,h=12)
+    print(VlnPlot(tmp, features = i) + NoLegend() + ylim(0,30000) )
+    dev.off()
+  }
+}
+
+```
+
+
+```{r}
+tmp1 = subset(CD8, idents = "amp_batch_ID_33")
+Idents(tmp1) = tmp1$PTGER4.Group.Celltype
+VlnPlot(tmp1,"PTGER4")
+for(i in 1){
+  
+  print(VlnPlot(CD8,"nCount_RNA") + NoLegend())
+  dev.off()
+}
+
+
+
+
+
+```
+
+```{r}
+Merad = NULL
+BOC <- readRDS("~/Library/CloudStorage/OneDrive-Personal/Documents_Onedrive/RStudioProject/scRNA/BOC.PTGER2Group.240110.rds")
+DimPlot(BOC)
+
+for(j in c("T_CD4","T_CD8","TIM")){
+  for(i in c("ETC.Ref2","Ribosome") ){
+    selected.genes = unlist( GeneSet$DE[[i]] ) %>% unique() %>% intersect(rownames(BOC))
+    tmp = subset(BOC,idents = j)
+    Idents(tmp) = tmp$ID
+    PNG(paste0("BOC.Expression.",j,".",i),w=18,h=6)
+    print(DotPlot(tmp, features = selected.genes)+scale_ig + Dot_axis90A  )
+    dev.off()
+  }
+}
+
+for(j in c("T_CD4","T_CD8")){
+  for(i in c("nCount_RNA","percent.mt") ){
+    tmp = subset(BOC,idents = j)
+    Idents(tmp) = tmp$ID
+    PNG(paste0("BOC.Vln.lim.",j,".",i),w=6,h=12)
+    print(VlnPlot(tmp, features = i,pt.size = 0) + NoLegend() + ylim(0,30000))
+    dev.off()
+  }
+}
+
+```
+
+
+```{r,fig.width=8,fig.height=2.5}
+DimPlot(Merad)
+CD8 = subset(Merad,idents = "T_CD8")
+Idents(CD8) = CD8$orig.ident
+for(i in unique(CD8$orig.ident)){
+  tmp = subset(CD8, idents = i)
+  Idents(tmp) = tmp$PTGER4.Group.Celltype
+  print(DotPlot(tmp, features = GeneSet$DE$ETC.Ref2) +Dot_axis90A +NoLegend() )
+}
+
+CD8 = Clustering1(CD8)
+DimPlot(CD8)
+FeaturePlot(CD8,"CD8A")
+```
+

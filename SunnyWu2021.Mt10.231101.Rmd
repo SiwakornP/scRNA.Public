@@ -1,0 +1,1438 @@
+---
+title: "Single-cell BRCA by Sunny Wu and Swarbrick 2021"
+author: "Siwakorn"
+date: "8/24/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+#Library
+```{r}
+library(Seurat)
+library(tidyverse)
+library(harmony)
+library(ggrepel)
+library(clusterProfiler)
+library("org.Hs.eg.db")
+library(DOSE)
+library(scales)
+library(enrichplot)
+library(ggsci)
+library(KEGGREST)
+library(biomaRt)
+library(gtools)
+```
+
+#Setting
+```{r}
+dir = "231101_Mt10"
+dir.create(paste0("~/Library/CloudStorage/OneDrive-Personal/Documents_Onedrive/RStudioProject/scRNA.Public/SunnyWu/Fig/",dir,"/"))
+PNG <- function(x,w = 7, h = 5, r =100){
+      png(filename = paste0("~/Library/CloudStorage/OneDrive-Personal/Documents_Onedrive/RStudioProject/scRNA.Public/SunnyWu/Fig/",dir,"/",x,".png" ),
+          width = w, 
+          height = h, 
+          units = "in", 
+          res = r)
+}
+```
+
+
+```{r}
+Col.HiLow.9Shades = c("#28198a","#163285","#3d569f","#8b99c2","#ffffff","#fce487","#f9c80e","#f86624","#ea3546")
+col_viridis <- c("grey",c(viridis::viridis(6))[1:5],"#fecd1a" )
+
+scale_viridis = scale_color_gradientn(colours = col_viridis )
+scale_ig = scale_color_gradientn(colours = c("grey","#120078","#9d0191","#fd3a69","#fecd1a"), values = c(0,0.1,0.3,0.6,1))
+scale_ByzantiumOrange = scale_color_gradientn(colours = c("#7B235E","#8C286B","#A41C59","#BB1046","#E14D2A","#FD841F"))
+scale_SummerSea2 = scale_color_gradientn(colours = c("#6F42AF","#173F5F","#20639B","#3CAEA3","#F6D55C","#ED553B"))
+scale_orange = scale_color_gradientn(colours = c("grey","yellow","orange","red"), values = c(0,0.1,0.5,1))
+
+Dot_scale = scale_size(range = c(1.5,8),name = "Percent Expression") 
+Dot_axis90 = theme(axis.text.x =  element_text(size = 15, angle = 90, hjust = 1, vjust = 0.3,color = "black"), axis.text.y = element_text(size = 15)) 
+
+
+find <- function(x){
+      sort(rownames(Wu)[grep(x,rownames(Wu) )])
+}
+Clustering1 <- function(tmp,dim=30,res=0.3,spread =1, dist = 1,group = "ID" ){
+      DefaultAssay(tmp) = "RNA"
+      tmp <- NormalizeData(tmp) %>% FindVariableFeatures() %>% ScaleData() %>% RunPCA(verbose = FALSE)
+      tmp <- RunHarmony(tmp, group.by.vars = group)
+      tmp <- RunUMAP(tmp, reduction = "harmony", dims = 1:dim, min.dist = dist, spread = spread )
+      tmp <- FindNeighbors(tmp, reduction = "harmony", dims = 1:dim) %>% FindClusters(resolution = res)
+      return(tmp)
+}
+
+ReResolution <- function(object,res = 1,dim = 30){
+      object <- FindNeighbors(object, reduction = "harmony", dims = 1:dim)
+      object <- FindClusters(object, resolution = res)
+      return(object)
+}
+ReMap <- function(object,dim=30, spread =1, min.dist =0.3){
+      object <- RunUMAP(object, reduction = "harmony", dims = 1:dim, spread = spread, min.dist = min.dist)
+      return(object)
+}
+FP.Serial <- function(object,selected.genes){
+      for(i in selected.genes ){
+      print(FeaturePlot(object,features = i) + scale_orange + NoLegend() )
+      }
+}
+
+RevIden <- function(x){
+      factor(x, levels = rev(levels(x)))
+}
+```
+
+#GENE
+```{r}
+GENE = list()
+GENE$PGE = c("PTGS1","PTGS2","PTGES","PTGES2","PTGES3","PTGER1","PTGER2","PTGER3","PTGER4","IL1B","IL1A","VEGFA","HIF1A","OSM")
+GENE$PGE2 = c("PTGS1","PTGS2","PTGES","PTGES2","PTGES3","PTGER1","PTGER2","PTGER3","PTGER4")
+GENE$Tcell.naive =c("TCF7", "LEF1", "IL7R", "XCL1", "GPR183", "CCR7", "KLF2", "RASA3", "FAM65B", "CDC25B", "FGFBP2", "LYAR", "SLAMF6", "C100ORF54", "LINC00861", "RASGRP2", "P2RY8", "SH3BP5", "SLCO3A1", "PXN", "CD27", "S1PR1", "S1PR4") %>% intersect(rownames(CD8s))
+GENE$Tcell.Differentiated = c("GZMB", "GZMA", "PRF1", "GNLY", "HAVCR2", "ENTPD1","CD69", "CCL3", "ITGA1", "HLA-DRB5", "HLA-DQA2", "HLA-DQA1", "PMCH", "PHLDA1","RDH10", "CEBPD", "C4ORF26", "TESC", "CD86", "LAG3", "TIGIT", "PDCD1", "CTLA4", "CD69", "TOX", "BATF", "ITGAE")%>% intersect(rownames(CD8s))
+
+```
+
+#------------------------------------------
+#Read1 count data
+```{r}
+tmp = Matrix::readMM("//home/siwakorn/scRNA.PB/Wu.2021/Wu_etal_2021_BRCA_scRNASeq/matrix.mtx.gz")
+tmp2 = read.table(file = "//home/siwakorn/scRNA.PB/Wu.2021/Wu_etal_2021_BRCA_scRNASeq/features.tsv.gz",sep = "\t")
+tmp3= read.table(file = "//home/siwakorn/scRNA.PB/Wu.2021/Wu_etal_2021_BRCA_scRNASeq/barcodes.tsv.gz",sep = "\t")
+tmp4 = read.csv(file = "//home/siwakorn/scRNA.PB/Wu.2021/Wu_etal_2021_BRCA_scRNASeq/metadata.csv")
+rownames(tmp4) = tmp4$X
+tmp4 = dplyr::select(tmp4,-X)
+
+
+dim(tmp)
+length(tmp2$V1) == nrow(tmp)
+length(tmp3$V1) == ncol(tmp)
+
+rownames(tmp) =tmp2$V1
+colnames(tmp) = tmp3$V1
+
+WuDF = list()
+Wu = CreateSeuratObject(counts = tmp, project = "SunnyWu2021", meta.data = tmp4 )
+Wu[["percent.mt"]] <- PercentageFeatureSet(Wu, pattern = "^MT-")
+Wu$Sample = Wu$orig.ident
+```
+
+#Normalization and Harmony integration
+```{r,fig.width=7,fig.height =6}
+Wu <- NormalizeData(Wu) %>% FindVariableFeatures() %>% ScaleData() %>% RunPCA(verbose = FALSE)
+Wu <- RunHarmony(Wu, group.by.vars = "orig.ident")
+Wu <- RunUMAP(Wu, reduction = "harmony", dims = 1:30)
+Wu <- FindNeighbors(Wu, reduction = "harmony", dims = 1:30) %>% FindClusters(resolution = 1)  
+#saveRDS(Wu, file = "//home/siwakorn/scRNA.PB/Wu.2021/RDS/SunnyWu2021.Harmony.2220824.rds")
+Wu <-readRDS(file = "//home/siwakorn/scRNA.PB/Wu.2021/RDS/SunnyWu2021.Harmony.2220824.rds")
+Wu$Sample = Wu$orig.ident
+Idents(Wu) = Wu$celltype_major
+WuDF$Col.Celltype_major = c("#ff1f26","#ff8133","#ff5c33","#6a4c93",
+                                    "#52a675","#4267ac","#ffca3a",
+                                    "#38a3e5","#8ac926")
+Wu <- RenameIdents(Wu,
+                   'T-cells' = "T-cells",
+                   'B-cells' = "B-cells",
+                   'Plasmablasts' = "Plasma-cells",
+                   'Myeloid' = "Myeloid",
+                   'Normal Epithelial' = "Epithelial",
+                   'Cancer Epithelial' = "Epithelial",
+                   'CAFs' = "Fibroblast",
+                   'PVL' = "Fibroblast",
+                   'Endothelial' = "Endothelial"
+                   )
+Wu$Identity.primary = Idents(Wu)
+Idents(Wu) = Wu$Identity.primary
+DimPlot(Wu)
+
+WuDF$AllMarkers.Identity.primary = FindAllMarkers(Wu)
+WuDF$AllMarkers.CelltypeMajor %>% group_by(cluster) %>% top_n(n=20,wt=avg_log2FC)
+```
+
+#Mt10
+```{r}
+Wu = subset(Wu, percent.mt < 10)
+VlnPlot(Wu,"percent.mt",pt.size =0) + NoLegend()
+Wu = Clustering1(Wu,group = "orig.ident")
+Idents(Wu) = Wu$celltype_minor
+DimPlot(Wu,label =T)
+```
+
+
+
+##Visualization
+```{r,fig.width=7,fig.height =6}
+for(i in 1){
+      png(filename = "/home/siwakorn/scRNA.PB/Fig/221024/Wu.DM.1A.221024.png", width = 7, height = 7, units ="in", res= 400)
+      print(
+            DimPlot(Wu,label =F,cols = c("#52a675","#4267ac","#6a4c93","#ff5c33","#ffca3a","#ff8133","#ff1f26" )) + NoLegend() )
+      dev.off()
+}
+
+for(i in 1){
+      png(filename = "/home/siwakorn/scRNA.PB/Fig/221024/Wu.DM.2.221024.png", width = 9, height = 7, units ="in", res= 400)
+      print(
+            DimPlot(Wu,label =F,cols = c("#52a675","#4267ac","#6a4c93","#ff5c33","#ffca3a","#ff8133","#ff1f26" )) )
+      dev.off()
+}
+
+
+for(i in c("PTPRC","PECAM1","COL1A2","MS4A1","CD3E","CD68","CSF1R","IGHG1","KRT18","MKI67","PTGS1","PTGS2","PTGES","PTGES2","PTGES3","PTGER2","PTGER4","PTGER1","PTGER3")){
+      png(filename = paste0("/home/siwakorn/scRNA.PB/Fig/221024/Wu.FP.",i,".png"), width = 7, height = 7, units ="in", res= 400)
+      print(FeaturePlot(Wu,features = i)+ scale_orange + NoLegend() + theme(plot.title = element_text(size = 20, face= "bold", colour = "firebrick") ))
+      dev.off()
+}
+
+Idents(Wu) = Wu$orig.ident
+for(i in 1){
+      png(filename = "/home/siwakorn/scRNA.PB/Fig/221024/Wu.VP.PTGS1.png", width = 14, height = 3.5, units ="in", res= 400)
+      print(VlnPlot(Wu, features = "PTGS1") + NoLegend()+theme(axis.text.x = element_text(angle = 90)) )
+      dev.off()
+      png(filename = "/home/siwakorn/scRNA.PB/Fig/221024/Wu.VP.PTGS2.png", width = 14, height = 3.5, units ="in", res= 400)
+      print(VlnPlot(Wu, features = "PTGS2") + NoLegend()+theme(axis.text.x = element_text(angle = 90)) )
+      dev.off()
+}
+```
+
+
+#Characterization
+PTGS1 and PTGS2 were predominantly expressed by myeloid cell
+PTGES, on the other hand, mainly expressed by epithelial cluster
+PTGER2 and PTGER4 were almost exlusive to T cell and myeloid cell
+```{r,fig.width=7,fig.height =6}
+WuDF$AllMarkers.CelltypeMajor = FindAllMarkers(Wu, max.cells.per.ident = 500)
+WuDF$AllMarkers.CelltypeMajor %>% group_by(cluster) %>% top_n(n=20, wt=avg_log2FC)
+
+rownames(Wu)[grep("PTG",rownames(Wu))]
+selected.genes = c("RAMP2","VWF","PECAM1","COL1A2","MMP11","CXCL14","ACTA2","SOD3","TAGLN","MS4A1","CD79A","CD3D","CD4","CD8A","FOXP3","CSF1R","KRT17")
+
+
+for(i in selected.genes ){
+      #PNG(paste0("Wu2021.FP.",i),w=5,h=5,r=150)
+      print(
+            FeaturePlot(Wu,features = i) + scale_orange + NoLegend()
+      )
+      #dev.off()
+}
+```
+
+#--------------------
+#Ranking
+```{r}
+Idents(Wu) = Wu$Sample
+tmp = DotPlot(Wu,features = "percent.mt")$data %>% arrange(desc(avg.exp))
+tmp$Rank.mt = paste0("Mt_",1:nrow(tmp))
+tmp$Sample = tmp$id
+tmp2 = left_join(as_tibble(Wu[[]],rownames = "CB"), tmp, by = "Sample" )
+tmp1 = tmp2$Rank.mt
+names(tmp1) = tmp2$CB
+Wu <- AddMetaData(Wu, metadata = tmp1, col.name = "Rank.mt")
+```
+
+##PTGS1
+```{r}
+
+Idents(Wu) = Wu$Sample
+tmp = AverageExpression(Wu, features = "PTGS1")$RNA
+tmp = tmp %>% t() %>% as.data.frame() 
+colnames(tmp) = "PTGS1"
+tmp = arrange(tmp,desc(PTGS1))
+tmp$Rank.PTGS1 = paste0("PTGS1_",1:nrow(tmp))
+tmp$Sample = rownames(tmp)
+
+tmp2 = left_join(as_tibble(Wu[[]],rownames = "CB"), tmp, by = "Sample" )
+tmp1 = tmp2$Rank.PTGS1
+names(tmp1) = tmp2$CB
+Wu <- AddMetaData(Wu, metadata = tmp1, col.name = "Rank.PTGS1")
+Wu$Rank.PTGS1 = factor(Wu$Rank.PTGS1,levels =  paste0("PTGS1_",1:nrow(tmp)) )
+```
+##M.PTGS1
+```{r}
+Wu$Identity.primary %>% unique()
+M = subset(Wu, Identity.primary == "Myeloid")
+Idents(M) = M$Sample
+tmp = AverageExpression(M, features = "PTGS1")$RNA
+tmp = tmp %>% t() %>% as.data.frame() 
+colnames(tmp) = "PTGS1"
+tmp = arrange(tmp,desc(PTGS1))
+tmp$Rank.M.PTGS1 = paste0("M.PTGS1_",1:nrow(tmp))
+tmp$Sample = rownames(tmp)
+tmp2 = left_join(as_tibble(Wu[[]],rownames = "CB"), tmp, by = "Sample" )
+tmp1 = tmp2$Rank.M.PTGS1
+names(tmp1) = tmp2$CB
+Wu <- AddMetaData(Wu, metadata = tmp1, col.name = "Rank.M.PTGS1")
+```
+
+
+##PTGS2
+```{r}
+Idents(Wu) = Wu$Sample
+tmp = AverageExpression(Wu, features = "PTGS2")$RNA
+tmp = tmp %>% t() %>% as.data.frame() 
+colnames(tmp) = "PTGS2"
+tmp = arrange(tmp,desc(PTGS2))
+tmp$Rank.PTGS2 = paste0("PTGS2_",1:nrow(tmp))
+tmp$Sample = rownames(tmp)
+tmp2 = left_join(as_tibble(Wu[[]],rownames = "CB"), tmp, by = "Sample" )
+tmp1 = tmp2$Rank.PTGS2
+names(tmp1) = tmp2$CB
+Wu <- AddMetaData(Wu, metadata = tmp1, col.name = "Rank.PTGS2")
+Wu$Rank.PTGS2 = factor(Wu$Rank.PTGS2,levels =  paste0("PTGS2_",1:nrow(tmp)) )
+```
+
+```{r}
+tmp = AverageExpression(M, features = "PTGS2")$RNA
+tmp = tmp %>% t() %>% as.data.frame() 
+colnames(tmp) = "PTGS2"
+tmp = arrange(tmp,desc(PTGS2))
+tmp$Rank.M.PTGS2 = paste0("M.PTGS2_",1:nrow(tmp))
+tmp$Sample = rownames(tmp)
+tmp2 = left_join(as_tibble(Wu[[]],rownames = "CB"), tmp, by = "Sample" )
+tmp1 = tmp2$Rank.M.PTGS2
+names(tmp1) = tmp2$CB
+Wu <- AddMetaData(Wu, metadata = tmp1, col.name = "Rank.M.PTGS2")
+```
+
+
+
+##PTGS
+```{r}
+Idents(Wu) = Wu$Sample
+tmp = AverageExpression(Wu, features = c("PTGS1","PTGS2"))$RNA
+tmp = tmp %>% t() %>% as.data.frame() 
+tmp$PTGSv1 = tmp$PTGS1+tmp$PTGS2
+tmp$PTGS1 = scale(tmp$PTGS1)
+tmp$PTGS2 = scale(tmp$PTGS2)
+tmp$PTGSv2 = tmp$PTGS1+tmp$PTGS2
+tmp = arrange(tmp,desc(PTGSv1))
+tmp$Rank.PTGSv1 =  paste0("PTGSv1_",1:nrow(tmp))
+tmp = arrange(tmp,desc(PTGSv2))
+tmp$Rank.PTGSv2 =  paste0("PTGSv2_",1:nrow(tmp))
+tmp = tmp %>% as_tibble(rownames = "Sample")
+tmp2 = left_join(as_tibble(Wu[[]],rownames = "CB"), tmp, by = "Sample" )
+
+tmp3 = tmp2$Rank.PTGSv1
+names(tmp3) = tmp2$CB
+Wu <- AddMetaData(Wu, metadata = tmp3, col.name = "Rank.PTGSv1")
+Wu$Rank.PTGSv1 = factor(Wu$Rank.PTGSv1, levels =  paste0("PTGSv1_",1:nrow(tmp)) )
+
+tmp3 = tmp2$Rank.PTGSv2
+names(tmp3) = tmp2$CB
+Wu <- AddMetaData(Wu, metadata = tmp3, col.name = "Rank.PTGSv2")
+Wu$Rank.PTGSv2 = factor(Wu$Rank.PTGSv2, levels =  paste0("PTGSv2_",1:nrow(tmp)) )
+
+```
+
+```{r}
+Wu <- readRDS("~/Library/CloudStorage/OneDrive-Personal/Documents_Onedrive/RStudioProject/scRNA/SunnyWu2021.Harmony.221024.rds")
+#Wu = Clustering1(Wu, dist = 1, spread = 1,group = "orig.ident" )
+#saveRDS(Wu,"~/RStudioProject/scRNA/Wu.230820.rds")
+Wu = readRDS("~/Library/CloudStorage/OneDrive-Personal/Documents_Onedrive/RStudioProject/scRNA/Wu.230820.rds")
+
+```
+
+##PGE score
+```{r}
+Wu$Sample = Wu$orig.ident
+Idents(Wu) = Wu$Sample
+tmp = AverageExpression(Wu, features = c("PTGS1","PTGS2","PTGES","PTGES2","PTGES3"))$RNA
+tmp = tmp %>% t() %>% as.data.frame() 
+
+tmp$PTGS1 = scale(tmp$PTGS1)
+tmp$PTGS2 = scale(tmp$PTGS2)
+tmp$PTGES = scale(tmp$PTGES)
+tmp$PTGES2 = scale(tmp$PTGES2)
+tmp$PTGES3 = scale(tmp$PTGES3)
+
+tmp$PGE = tmp$PTGS1+tmp$PTGS2 + tmp$PTGES + tmp$PTGES2 + tmp$PTGES3
+tmp = arrange(tmp,desc(PGE))
+
+tmp$Rank.PGE =  paste0("PGE_",1:nrow(tmp))
+
+tmp = tmp %>% as_tibble(rownames = "Sample")
+tmp2 = left_join(as_tibble(Wu[[]],rownames = "CB"), tmp, by = "Sample" )
+
+tmp3 = tmp2$Rank.PGE
+names(tmp3) = tmp2$CB
+Wu <- AddMetaData(Wu, metadata = tmp3, col.name = "Rank.PGE")
+Wu$Rank.PGE = factor(Wu$Rank.PGE, levels =  paste0("PGE_",1:nrow(tmp)) )
+Idents(Wu) = Wu$Rank.PGE
+DotPlot(Wu, features = GeneSet$DE$PGs ) + Dot_scale + Dot_axis90
+DotPlot(Wu, features = GeneSet$DE$ETC.Ref2) + Dot_scale + Dot_axis90 + scale_viridis
+
+
+Wu$Identity.primary %>% unique()
+M = subset(Wu, Identity.primary == "Myeloid")
+Idents(M) = M$Rank.PGE
+
+DotPlot(M, features = c("CCL3","CCL4")) + Dot_scale + Dot_axis90 + scale_viridis
+```
+##Cell fraction
+```{r}
+tmp2 = table(Wu$celltype_minor, Wu$orig.ident)
+tmp2 = apply(tmp2,1,function(x) x/colSums(tmp2)*100) %>% as.data.frame() 
+tmp2$Ratio = tmp2$Macrophage/tmp2$`T cells CD8+`
+tmp2 = tmp2[,c(as.character(selected.cluster),"Ratio")] %>% arrange(desc(Ratio)) %>% as_tibble(rownames = "Sample")
+tmp2
+
+tmp2 = table(Wu$celltype_minor, Wu$orig.ident)
+tmp2 = apply(tmp2,1,function(x) x/colSums(tmp2)*100) %>% as.data.frame() %>% as_tibble(rownames = "Sample")
+tmp2 = arrange(tmp2,desc(Macrophage))
+tmp2$Sample
+
+
+```
+
+#-----------------------
+#PTGER4 Group
+```{r}
+tmp = PTGER4.Group(Wu,"Identity.primary","orig.ident")
+Wu = AddMetaData(Wu, tmp,"PTGER4.Group.primary")
+Wu$PTGER4.Group.primary = factor(Wu$PTGER4.Group.primary, levels = c("Undetected","Low","Intermediate","High") )
+
+tmp = PTGER4.Group(Wu,"celltype_major","orig.ident")
+Wu = AddMetaData(Wu, tmp,"PTGER4.Group.major")
+Wu$PTGER4.Group.major = factor(Wu$PTGER4.Group.major, levels = c("Undetected","Low","Intermediate","High") )
+
+tmp = PTGER4.Group(Wu,"celltype_minor","orig.ident")
+Wu = AddMetaData(Wu, tmp,"PTGER4.Group.minor")
+Wu$PTGER4.Group.minor = factor(Wu$PTGER4.Group.minor, levels = c("Undetected","Low","Intermediate","High") )
+saveRDS(Wu,"~/Library/CloudStorage/OneDrive-Personal/Documents_Onedrive/RStudioProject/scRNA.Public/SunnyWu/SunnyWu.Mt10.PTGER4Group.231101.rds")
+```
+
+
+##PTGER4 expression per sample
+```{r}
+CD8 = subset(Wu, celltype_minor == "T cells CD8+") #%>% subset(PTGER4.Group.minor %in% c("Low","Intermediate","High") )
+M = subset(Wu, celltype_minor == "Macrophage") 
+Idents(CD8) = CD8$PTGER4.Group.minor
+Idents(M) = M$PTGER4.Group.minor
+for(i in 1){
+  PNG("Wu.CD8.VP.PTGER4Group", w= 2, h =3)
+  print(VlnPlot(CD8, "PTGER4", pt.size = 0) + NoLegend() )
+  dev.off()
+  PNG("Wu.M.VPPTGER4Group", w= 2, h =3)
+  print(VlnPlot(M, "PTGER4",pt.size = 0) + NoLegend() )
+  dev.off()
+}
+```
+
+##PTGER4 expression per group
+```{r}
+Wu$PTGER4.Group.major
+Wu$celltype_major
+tmp = FetchData(Wu,vars = c("PTGER4","PTGER4.Group.major" , "celltype_major","orig.ident"))
+for(i in 1){
+  PNG("Wu.VP.PTGER4Group", w= 20, h =16)
+  print(
+    ggplot(tmp, aes(x = PTGER4.Group.major, y=PTGER4, fill = celltype_major ) )+ 
+      geom_violin()+
+      facet_grid( celltype_major ~ orig.ident, scales = "free", space="free", switch = "y") + 
+      theme_classic() + Dot_axis90B +
+      theme(strip.placement = "outside",
+            strip.text.x  = element_text(size=12),
+            strip.text.y  = element_text(size=12)) +
+      NoLegend()
+  )
+  dev.off()
+}
+```
+
+#------------------------
+#DE
+##celltype_major 
+```{r}
+Idents(Wu) = Wu$celltype_major 
+DE = list()
+for(i in levels(Idents(Wu))[c(1,4)] ){
+      print(i)
+      tmp = subset(Wu, idents = i)
+      DE[[i]] = FullDE(tmp,"PTGER4.Group.primary","orig.ident")
+      saveRDS(DE,"~/Library/CloudStorage/OneDrive-Personal/Documents_Onedrive/RStudioProject/scRNA.Public/SunnyWu/Wu.Mt10.DE.celltype_major.231101.rds")
+      
+}
+
+df = data.frame()
+for(i in names(DE) ){
+  tmp = names(DE[[i]]) %>% setdiff(c("FoldChange.Table","FoldChange.Sum"))
+  for(j in tmp ){
+      df1 = DE[[i]][[j]] %>% as_tibble(rownames = "Genes")
+      df1$Cluster = i
+      df1$Dataset = j
+      df = rbind(df,df1)
+      }
+}
+
+df$Cluster = factor(df$Cluster, levels = names(DE))
+
+saveRDS(DE,"~/Library/CloudStorage/OneDrive-Personal/Documents_Onedrive/RStudioProject/scRNA.Public/SunnyWu/Wu.Mt10.DE.celltype_major.231101.rds")
+```
+
+##celltype.minor
+```{r}
+Idents(Wu) = Wu$celltype_minor
+levels(Idents(Wu))[c(11,16,17,19)]
+
+DE = list()
+for(i in levels(Idents(Wu))[c(11,16,17,19)] ){
+      print(i)
+      tmp = subset(Wu, idents = i)
+      DE[[i]] = FullDE(tmp,"PTGER4.Group.minor","orig.ident")
+      saveRDS(DE,"~/Library/CloudStorage/OneDrive-Personal/Documents_Onedrive/RStudioProject/scRNA.Public/SunnyWu/Wu.Mt10.DE.Minor.231101.rds")
+      
+}
+
+df = data.frame()
+for(i in names(DE) ){
+  tmp = names(DE[[i]]) %>% setdiff(c("FoldChange.Table","FoldChange.Sum"))
+  for(j in tmp ){
+      df1 = DE[[i]][[j]] %>% as_tibble(rownames = "Genes")
+      df1$Cluster = i
+      df1$Dataset = j
+      df = rbind(df,df1)
+      }
+}
+df$Cluster = factor(df$Cluster, levels = names(DE))
+DE$df = df
+
+saveRDS(DE,"~/Library/CloudStorage/OneDrive-Personal/Documents_Onedrive/RStudioProject/scRNA.Public/SunnyWu/Wu.Mt10.DE.Minor.231101.rds")
+```
+
+
+##Name change
+```{r}
+df$Rank.PTGS1 = NA
+df$Rank.M.PTGS1 = NA
+df$Rank.PTGS2 = NA
+df$Rank.M.PTGS2 = NA
+df$Rank.PTGSv1 = NA
+df$Rank.PTGSv2 = NA
+df$Rank.mt = NA
+for(i in c("Rank.PTGS1", "Rank.PTGS2","Rank.M.PTGS1", "Rank.M.PTGS2","Rank.PTGSv1","Rank.PTGSv2" )){
+  df2 = Wu[[]] %>% dplyr::select("orig.ident",i ) %>% as_tibble() %>% as.data.frame()
+  df2 = df2[!duplicated(df2),]
+  rownames(df2) = df2$orig.ident
+  df3 = data.frame()
+  for(j in df2$orig.ident){
+  tmp1 = filter(df, Dataset == j )
+  tmp1[,i] = df2[j,i] %>% as.character()
+  df3 = rbind(df3,tmp1)
+  }
+  df = df3
+}
+df
+df$Rank.PTGS1 = factor(df$Rank.PTGS1, levels = levels(Wu$Rank.PTGS1) )
+df$Rank.M.PTGS1 = factor(df$Rank.M.PTGS1, levels = mixedsort(unique( (Wu$Rank.M.PTGS1) ) ) )
+df$Rank.PTGS2 = factor(df$Rank.PTGS2, levels = levels(Wu$Rank.PTGS2) )
+df$Rank.M.PTGS2 = factor(df$Rank.M.PTGS2, levels = mixedsort(unique( (Wu$Rank.M.PTGS2) ) ) )
+df$Rank.PTGSv1 = factor(df$Rank.PTGSv1, levels = levels(Wu$Rank.PTGSv1) )
+df$Rank.PTGSv2 = factor(df$Rank.PTGSv2, levels = levels(Wu$Rank.PTGSv2) )
+df$Rank.mt = factor(df$Rank.mt, levels = mixedsort(unique(Wu$Rank.mt) ) )
+DE$df = df
+saveRDS(DE,"~/Library/CloudStorage/OneDrive-Personal/Documents_Onedrive/RStudioProject/scRNA.Public/SunnyWu/Wu.DE.231024.rds")
+```
+
+#---------------------------
+#PTGER 6Q
+```{r}
+table(Wu$celltype_minor, Wu$celltype_subset) %>% as.data.frame() %>% spread(key = Var2, value = Freq)
+Wu$celltype_minor %>% unique()
+CD8 = subset(Wu, celltype_minor == "T cells CD8+")
+Idents(CD8) = CD8$celltype_subset
+
+tmp = FetchData(CD8, vars = "PTGER4")
+tmp1 = filter(tmp, PTGER4 > 0) %>% arrange(PTGER4)
+tmp2 = filter(tmp, PTGER4 == 0)
+hist(tmp1$PTGER4)
+tmp2$PTGER4_Q = "Q0"
+tmp1$PTGER4_Q[(tmp1$PTGER4 > 0 & tmp1$PTGER4  <0.5)] = "Q1"
+tmp1$PTGER4_Q[(tmp1$PTGER4 > 0.5 & tmp1$PTGER4  <1)] = "Q2"
+tmp1$PTGER4_Q[(tmp1$PTGER4 > 1 & tmp1$PTGER4  <1.5)] = "Q3"
+tmp1$PTGER4_Q[(tmp1$PTGER4 > 1.5 & tmp1$PTGER4  <2)] = "Q4"
+tmp1$PTGER4_Q[(tmp1$PTGER4 > 2 & tmp1$PTGER4  <2.5)] = "Q5"
+tmp1$PTGER4_Q[(tmp1$PTGER4 > 2.5 & tmp1$PTGER4  <3)] = "Q6"
+tmp1$PTGER4_Q[(tmp1$PTGER4 > 3 & tmp1$PTGER4  <3.5)] = "Q7"
+tmp1$PTGER4_Q[(tmp1$PTGER4 > 3.5 )] = "Q8"
+
+tmp = rbind(tmp1,tmp2)
+
+tmp1 = tmp$PTGER4_Q
+names(tmp1) = rownames(tmp)
+CD8 = AddMetaData(CD8, metadata = tmp1, col.name = "PTGER4_Q")
+CD8$PTGER4_Q = factor(CD8$PTGER4_Q, levels = c(paste0("Q",0:8)) )
+Idents(CD8) = CD8$PTGER4_Q
+VlnPlot(CD8,"PTGER4")
+
+
+for(j in c("PTGER4_Q")){
+  Idents(CD8) = j
+  for(i in c("ETC.Ribosome")){
+    PNG(paste0("Wu.CD8.DotPlot.",j,".",i), w = 34, h =4)
+    print(DotPlot(CD8, features = GeneSet$DE[[i]] ) + NoLegend()+ Dot_axis90 + scale_viridis )
+    dev.off()
+  }
+}
+
+i = "ETC.Ribosome"
+
+#Heatmap as bulk
+df = DotPlot(CD8, features = GeneSet$DE[[i]])$data
+for(i in 1 ){
+  PNG(paste0("Wu.CD8.Heatmap.PTGER4_Q.ETC.Ribosome"), h = 2.5, w =  20,r=400)
+  print(
+  ggplot(df, aes(y = id , x = features.plot  ) ) +
+    facet_grid(. ~ feature.groups , scales = "free", space="free", switch = "y") + 
+    theme_classic() + 
+    ggtitle(i)+
+    geom_tile(color = "white",aes(fill =avg.exp.scaled)) +  
+    scale_fill_gradientn(colours = Col.HiLow.7Shades,
+                         values =  c( 0,0.35,0.5,0.65,1 ),                                 
+                          ) +
+    theme(plot.title = element_blank(),
+          axis.text.x = element_text(size =Fsize, family = "Arial", color = "black", face = "italic",angle = 90, hjust =1, vjust =0.3),
+          axis.text.y = element_text(size =Fsize, family = "Arial", color = "black"),
+          axis.line = element_line(colour = 'black', size = 0.25),
+          axis.ticks = element_line(colour = 'black', size = 0.15),
+          axis.ticks.length = unit(0.05,"cm"),
+          axis.title = element_blank(), 
+          #strip.text.y = element_blank(),
+          strip.text.x.top = element_text(size =Fsize, family = "Arial",colour = "black",
+                                          margin = margin(t = 0.1, r = 0, b = 0.1, l = 0, unit = "cm") ),
+          strip.background = element_rect(fill = "white",linewidth = 0.35),
+          #strip.background.y =  element_blank(),
+          strip.placement = "outside",
+          legend.key.size = unit(0.1, 'in'),
+                        legend.title = element_text(size = Fsize),
+                        legend.text = element_text(size=Fsize-1),
+          
+          #plot.margin = margin(t = 0, r = 0, b = 0, l = 0  ),
+          legend.position = "bottom"
+          )
+  )
+  dev.off()
+}
+
+#Heatmap per sample
+Idents(CD8) = CD8$PTGER4_Q
+i = "ETC.Ribosome"
+df = data.frame()
+for(j in unique((CD8$Rank.PTGS1)) ){
+  print(j)
+  tmp = subset(CD8, Rank.PTGS1 == j)
+  df1 = DotPlot(tmp, features = GeneSet$DE[[i]])$data
+  df1$Dataset = j
+  df = rbind(df,df1)
+}
+df$id = factor(df$id, levels = levels(CD8$PTGER4_Q))
+df$Dataset = factor(df$Dataset, levels = mixedsort( unique(df$Dataset) ) )
+
+for(i in 1 ){
+  a = max(abs(df$avg.exp.scaled), na.rm = T)
+  PNG(paste0("Wu.CD8.Heatmap.perSpec.Rank.PTGS1-PTGER4_Q.ETC.Ribosome"), h = 24, w =  20,r=400)
+  print(
+  ggplot(df, aes(y = id , x = features.plot  ) ) +
+    facet_grid(Dataset ~ feature.groups , scales = "free", space="free", switch = "y") + 
+    theme_classic() + 
+    ggtitle(i)+
+    geom_tile(color = "white",aes(fill =avg.exp.scaled)) +  
+    scale_fill_gradientn(colours = Col.HiLow.7Shades,
+                         values =  c( 0,0.35,0.5,0.65,1 ),                                 
+                         limits = c(-a,a) ) +
+    theme(plot.title = element_blank(),
+          axis.text.x = element_text(size =Fsize, family = "Arial", color = "black", face = "italic",angle = 90, hjust =1, vjust =0.3),
+          axis.text.y = element_text(size =Fsize, family = "Arial", color = "black"),
+          axis.line = element_line(colour = 'black', size = 0.25),
+          axis.ticks = element_line(colour = 'black', size = 0.15),
+          axis.ticks.length = unit(0.05,"cm"),
+          axis.title = element_blank(), 
+          #strip.text.y = element_blank(),
+          strip.text.x.top = element_text(size =Fsize, family = "Arial",colour = "black",
+                                          margin = margin(t = 0.1, r = 0, b = 0.1, l = 0, unit = "cm") ),
+          strip.background = element_rect(fill = "white",linewidth = 0.35),
+          #strip.background.y =  element_blank(),
+          strip.placement = "outside",
+          legend.key.size = unit(0.1, 'in'),
+                        legend.title = element_text(size = Fsize),
+                        legend.text = element_text(size=Fsize-1),
+          
+          #plot.margin = margin(t = 0, r = 0, b = 0, l = 0  ),
+          legend.position = "bottom"
+          )
+  )
+  dev.off()
+}
+```
+#--------------------------
+#Sensitivity
+
+##UCell
+```{r}
+library(UCell)
+Wu <- readRDS("~/Library/CloudStorage/OneDrive-Personal/Documents_Onedrive/RStudioProject/scRNA.Public/SunnyWu/SunnyWu.231027.rds")
+Idents(Wu) = Wu$celltype_minor
+
+CD8 = subset(Wu, celltype_minor == "T cells CD8+" )
+Signatures  = list("ETC" = intersect(unlist(GeneSet$DE$ETC.Ref2) , rownames(Wu) ) )
+CD8 = AddModuleScore_UCell(CD8, features  = Signatures ,name = NULL)
+
+Idents(CD8 ) = paste0(CD8$Sample,"_",CD8$PTGER4.Group.minor )
+df= DotPlot(CD8,features = "ETC" )$data %>% arrange(avg.exp)
+df$Sample = df$id
+df$Sample = gsub("_High","",df$Sample)
+df$Sample = gsub("_Intermediate","",df$Sample)
+df$Sample = gsub("_Low","",df$Sample)
+df$Sample = gsub("_Undetected","",df$Sample)
+
+df$PTGER4.Group = NA
+df$PTGER4.Group[grep("High",df$id) ] = "High"
+df$PTGER4.Group[grep("Intermediate",df$id) ] = "Intermediate"
+df$PTGER4.Group[grep("Low",df$id) ] = "Low"
+df$PTGER4.Group[grep("Undetected",df$id) ] = "Undetected"
+
+df2 = dplyr::select(df, Sample,PTGER4.Group,avg.exp) %>% spread(key = PTGER4.Group, value = avg.exp)
+df2$Ratio = df2$High/df2$Low
+df2 = df2 %>% arrange(desc(Ratio))
+df2
+
+DE = readRDS("~/Library/CloudStorage/OneDrive-Personal/Documents_Onedrive/RStudioProject/scRNA.Public/SunnyWu/Wu.DE.Minor.231027.rds")
+df = DE$df 
+
+df$Dataset = factor(df$Dataset, levels = df2$Sample)
+
+selected.cluster = df$Cluster %>% unique()
+for(i in c("ETC.Ref2") ){
+  selected.genes = unlist( GeneSet$DE[[i]] ) %>% unique()
+  df1 = filter(df, Genes %in% selected.genes )  %>% filter(Cluster %in% selected.cluster)
+  a = max(abs(df1$avg_log2FC))+0.2 
+  plot = ggplot(df1, aes(y = Dataset , x = Genes  ) ) + 
+    facet_grid(Cluster ~ ., scales = "free", space="free", switch = "y") + 
+    theme_classic() + 
+    Dot_axis90A + 
+    ggtitle(i)+
+    geom_tile(color = "white",aes(fill =avg_log2FC)) +  
+    scale_fill_gradientn(colours = Col.HiLow.7Shades,
+                         values =  c( 0,0.45,0.5,0.55,  a ),                                 
+                         limits = c(-a,a) ) +
+    theme(plot.title = element_blank(),
+          axis.text.x = element_text(size =Fsize, family = "Arial", color = "black", face = "italic",angle = 90, hjust =1, vjust =0.3),
+          axis.text.y = element_text(size =Fsize, family = "Arial", color = "black"),
+          axis.line = element_line(colour = 'black', size = 0.25),
+          axis.ticks = element_line(colour = 'black', size = 0.15),
+          axis.ticks.length = unit(0.05,"cm"),
+          axis.title = element_blank(), 
+          #strip.text.y = element_blank(),
+          strip.text.x.top = element_text(size =Fsize, family = "Arial",colour = "black",
+                                          margin = margin(t = 0.1, r = 0, b = 0.1, l = 0, unit = "cm") ),
+          strip.background = element_rect(fill = "white",linewidth = 0.35),
+          #strip.background.y =  element_blank(),
+          strip.placement = "outside",
+          legend.key.size = unit(0.1, 'in'),
+                        legend.title = element_text(size = Fsize),
+                        legend.text = element_text(size=Fsize-1),
+          
+          #plot.margin = margin(t = 0, r = 0, b = 0, l = 0  ),
+          legend.position = "bottom"
+          )
+  
+                
+  PNG(paste0("Wu.Tumor.DE.perSample.Heatmap.sort.",i), h = 10, w =  10)
+  print(plot)
+  dev.off()
+}
+
+
+
+Idents(Wu) = Wu$Sample
+Wu = RenameIdents(Wu,
+             'CID3586' = "Sensitive",
+             'CID3838' = "Sensitive",
+             'CID3946' = "Sensitive",
+             'CID3963' = "Sensitive",
+             'CID4067' = "Insensitive",
+             'CID4535' = "Insensitive",
+             'CID44041' = "Insensitive")
+Wu$Sensitivity = Idents(Wu)
+DimPlot(Wu)
+df = FindMarkers(Wu, ident.1 = "Sensitive", ident.2 = "Insensitive")
+WuDF = list("DE.Sensitive_Insensitive" = df)
+
+df %>% arrange(desc(avg_log2FC))
+df %>% arrange(avg_log2FC)
+df2
+```
+
+
+
+##Hierarchical clustering
+```{r}
+DE = readRDS("~/Library/CloudStorage/OneDrive-Personal/Documents_Onedrive/RStudioProject/scRNA.Public/SunnyWu/Wu.DE.Minor.231027.rds")
+df = DE$df 
+df1 = df %>% filter(Cluster == "T cells CD8+" & Genes %in% unlist(GeneSet$DE$ETC.Ref2))
+tmp1 = df1 %>% dplyr ::select(Genes,Dataset,avg_log2FC) %>% spread(key =Genes,value = avg_log2FC) %>% as.data.frame()
+rownames(tmp1) = tmp1$Dataset
+tmp1$Dataset = NULL
+tmp1
+dendro = tmp1 %>% scale() %>% as.data.frame() %>% dist() %>% hclust() %>% as.dendrogram()
+dendro2 =t(tmp1) %>% scale() %>% as.data.frame() %>% dist() %>% hclust() %>% as.dendrogram()
+
+df1$Dataset = factor(df1$Dataset, levels = rownames(tmp1)[order.dendrogram(dendro)] )
+df1$Genes = factor(df1$Genes,  levels = rownames(t(tmp1))[order.dendrogram(dendro2)] )
+for(i in 1){
+  PNG("Wu.CD8.Heatmap.perSpec.ETC.Ref2.SortHC.231027",w=10,h=4,r=300)
+  print(
+    ggplot(df1, aes(x = Genes, y = Dataset, fill = avg_log2FC)) +
+      geom_tile(color = "white")+
+      Dot_axis90 + 
+      scale_fill_gradientn(colours = Col.HiLow.7Shades,
+                         values =  c( 0,0.45,0.5,0.55,  1 ),
+                         limits = c(-3,3)) +
+      theme(plot.title = element_blank(),
+          axis.text.x = element_text(size =Fsize, family = "Arial", color = "black", face = "italic",angle = 90, hjust =1, vjust =0.3),
+          axis.text.y = element_text(size =Fsize, family = "Arial", color = "black"),
+          axis.line = element_line(colour = 'black', size = 0.25),
+          axis.ticks = element_line(colour = 'black', size = 0.15),
+          axis.ticks.length = unit(0.05,"cm"),
+          axis.title = element_blank(), 
+          #strip.text.y = element_blank(),
+          strip.text.x.top = element_text(size =Fsize, family = "Arial",colour = "black",
+                                          margin = margin(t = 0.1, r = 0, b = 0.1, l = 0, unit = "cm") ),
+          strip.background = element_rect(fill = "white",linewidth = 0.35),
+          #strip.background.y =  element_blank(),
+          strip.placement = "outside",
+          legend.key.size = unit(0.1, 'in'),
+                        legend.title = element_text(size = Fsize),
+                        legend.text = element_text(size=Fsize-1),
+          
+          #plot.margin = margin(t = 0, r = 0, b = 0, l = 0  ),
+          legend.position = "bottom"
+          )
+  )
+  dev.off()
+}
+
+Idents(Wu) = Wu$Sample
+Wu = RenameIdents(Wu,
+             'CID3586' = "Sensitive",
+             'CID3963' = "Sensitive",
+             'CID4495' = "Sensitive",
+             'CID3838' = "Sensitive",
+             'CID4471' = "Insensitive",
+             'CID4530N' = "Insensitive",
+             'CID4067' = "Insensitive")
+Wu$Sensitivity = Idents(Wu)
+DimPlot(Wu)
+df = FindMarkers(Wu, ident.1 = "Sensitive", ident.2 = "Insensitive")
+#WuDF = list("DE.Sensitive_Insensitive" = df)
+WuDF$DE.Sensitive_Insensitive.HC = df
+df %>% arrange(desc(avg_log2FC))
+df %>% arrange(avg_log2FC)
+WuDF$DE.Sensitive_Insensitive.HC %>% as_tibble(rownames = "Genes") %>% filter(Genes %in% GeneSet$DE$CMX) %>% arrange(desc(avg_log2FC))
+
+tmp = subset(Wu, celltype_minor == "T cells CD8+" )
+Idents(tmp) = tmp$Sensitivity
+WuDF$DE.SensitiveCD8_InsensitiveCD8.HC = FindMarkers(tmp, ident.1 = "Sensitive", ident.2 = "Insensitive")
+WuDF$DE.SensitiveCD8_InsensitiveCD8.HC %>% arrange(desc(avg_log2FC))
+```
+
+##Cell count
+```{r}
+Wu <- readRDS("~/Library/CloudStorage/OneDrive-Personal/Documents_Onedrive/RStudioProject/scRNA.Public/SunnyWu/SunnyWu.Mt10.PTGER4Group.231101.rds")
+M = subset(Wu,celltype_minor == "Macrophage")
+CD8 = subset(Wu, celltype_minor == "T cells CD8+") 
+
+write.csv(table(M$orig.ident,M$PTGER4.Group.minor) , "~/Library/CloudStorage/OneDrive-Personal/Documents_Onedrive/RStudioProject/scRNA.Public/SunnyWu/Fig/231101_Mt10/Macrophage.Number.csv" )
+write.csv(table(CD8$orig.ident , CD8$PTGER4.Group.minor) , "~/Library/CloudStorage/OneDrive-Personal/Documents_Onedrive/RStudioProject/scRNA.Public/SunnyWu/Fig/231101_Mt10/CD8.Number.csv" )
+
+Idents(Wu) = Wu$Sample
+Wu = RenameIdents(Wu,
+             'CID3586' = "Sensitive",
+             'CID3838' = "Sensitive",
+             'CID3921' = "Sensitive",
+             'CID3941' = "Exclude",
+             'CID3946' = "Exclude",
+             'CID3948' = "Exclude",
+             'CID3963' = "Sensitive",
+             'CID4040' = "Exclude",
+             'CID4066' = "Sensitive",
+             'CID4067' = "Insensitive",
+             'CID4290A' = "Insensitive",
+             'CID4398' = "Exclude",
+             'CID44041' = "Exclude",
+             'CID4461' = "Exclude",
+             'CID4463' = "Exclude",
+             'CID4465' = "Exclude",
+             'CID4471' = "Sensitive",
+             'CID4495' = "Sensitive",
+             'CID44971' = "Sensitive",
+             'CID44991' = "Insensitive",
+             'CID4513' = "Sensitive",
+             'CID4515' = "Sensitive",
+             'CID45171' = "Exclude",
+             'CID4523' = "Exclude",
+             'CID4530N' = "Exclude",
+             'CID4535' = "Exclude"
+             )
+Wu$Sensitivity.M_Count = factor(Idents(Wu),levels = c("Sensitive","Insensitive","Exclude") )
+WuDF$DE.Sensitivity.M_Count = FindMarkers(Wu, ident.1 = "Sensitive", ident.2 = "Insensitive")
+df = WuDF$DE.Sensitivity.M_Count %>% as_tibble(rownames = "Genes")
+df %>% arrange(desc(avg_log2FC)) %>% filter(Genes %in% GeneSet$DE$CMX)
+df %>% arrange(avg_log2FC) %>% filter(Genes %in% GeneSet$DE$CMX)
+
+
+tmp = df %>% as_tibble(rownames = "Genes" ) %>% dplyr::select(Genes, avg_log2FC) %>% arrange(avg_log2FC)
+df2 <- fgseaMultilevel(fgsea_sets, stats = deframe(tmp) ) %>% arrange(desc(NES) )
+df2 %>% filter(pathway %in% names(fgsea_sets_H))
+```
+
+```{r}
+Idents(Wu) = Wu$Sample
+Wu = RenameIdents(Wu,
+             'CID3586' = "Sensitive",
+             'CID3838' = "Sensitive",
+             'CID3921' = "Sensitive",
+             'CID3941' = "Exclude",
+             'CID3946' = "Exclude",
+             'CID3948' = "Exclude",
+             'CID3963' = "Sensitive",
+             'CID4040' = "Exclude",
+             'CID4066' = "Sensitive",
+             'CID4067' = "Insensitive",
+             'CID4290A' = "Exclude",
+             'CID4398' = "Exclude",
+             'CID44041' = "Exclude",
+             'CID4461' = "Exclude",
+             'CID4463' = "Exclude",
+             'CID4465' = "Exclude",
+             'CID4471' = "Sensitive",
+             'CID4495' = "Sensitive",
+             'CID44971' = "Sensitive",
+             'CID44991' = "Insensitive",
+             'CID4513' = "Sensitive",
+             'CID4515' = "Exclude",
+             'CID45171' = "Exclude",
+             'CID4523' = "Exclude",
+             'CID4530N' = "Exclude",
+             'CID4535' = "Exclude"
+             )
+Wu$Sensitivity.Count = factor(Idents(Wu),levels = c("Sensitive","Insensitive","Exclude") )
+```
+###Cell fraction
+```{r}
+
+tmp1 = table(Wu$celltype_major , Wu$orig.ident )
+Wu$celltype_major %>% unique()
+tmp1 = apply(tmp1,1,function(x) x/colSums(tmp1)*100) %>% t() %>% as_tibble(rownames = "Cluster") %>% gather(key = "ID", value = "Pct", -Cluster)
+tmp1$Cluster =factor(tmp1$Cluster, levels = c("T-cells", "Myeloid","B-cells","Plasmablasts",
+                                              "Endothelial" , "CAFs","PVL",
+                                              "Normal Epithelial","Cancer Epithelial")                 )
+tmp1
+tmp2 = WuDF$Link.Sample_Sensitivity.Count
+tmp2$ID = tmp2$Sample
+tmp = left_join(tmp1,tmp2)
+
+for(i in 1){
+      PNG("Wu.celltype_major-ID.Percentage.H", w=3.5,h=2.5,r=400)
+      print(
+            ggplot(tmp,aes(x = ID ,y = Pct,fill = Cluster )) +
+                  geom_bar(stat="identity")  +
+                  scale_fill_manual(values= palettes$`Tableau 20`$value ) + 
+                  theme_classic()+ 
+                  facet_grid(.~ Sensitivity.Count, scales = "free", space="free", switch = "y")+
+                  theme(axis.text.x = element_text(family="Arial",color = "black", size = 6, angle = 90, hjust =1,vjust=0.3),
+                        axis.text.y = element_text(family="Arial",color = "black",size =6),
+                        axis.line = element_line(colour = 'black', linewidth = 0.25),
+                        legend.position = "right",
+                        legend.key.size = unit(0.1,"in"),
+                        legend.text = element_text(size = 3),
+                        axis.title = element_blank(),
+                        strip.background = element_rect(fill = "white",linewidth = 0.35),
+                        strip.text.x.top = element_text(size =4,colour = "black",
+                                          margin = margin(t = 0.1, r = 0, b = 0.1, l = 0, unit = "cm") ),
+                        plot.margin = margin(t = 0, r = 0, b = 0, l = 0  )
+                        ) 
+      )
+      dev.off()
+}
+```
+
+###DE
+```{r}
+WuDF$DE.Sensitivity.Count = FindMarkers(Wu, ident.1 = "Sensitive", ident.2 = "Insensitive") %>% as_tibble(rownames = "Genes")
+df = WuDF$DE.Sensitivity.Count 
+df %>% arrange(desc(avg_log2FC)) %>% filter(Genes %in% GeneSet$DE$CMX)
+df %>% arrange(avg_log2FC) #%>% filter(Genes %in% GeneSet$DE$CMX)
+```
+####Volcano
+```{r}
+df = WuDF$DE.Sensitivity.Count 
+for(q in c("ETC","Ribosome","ETC.selected3")){
+  tmp = df 
+  tmp$logP = (-1)*(log10(tmp$pvalue))
+  tmp1 = tmp %>% filter(Genes %in% unlist(geneSet[[q]] ) )
+  tmp1$Group = q
+  tmp2 = tmp %>% filter(!Genes %in% unlist(geneSet[[q]] ) )
+  tmp2$Group = "other"
+  tmp = rbind(tmp1,tmp2)
+  tmp$logP %>% range()
+  tmp = tmp[!is.na(tmp$logP),]
+  for(i in 1){  
+    PDF(paste0("Ext.Fig.6B.Sanin.",q),w=5,h=5.3)
+    print(
+      ggplot(tmp, aes(x = log2FoldChange, y = logP)) + 
+      geom_point(size = 0.4,color ="grey")+
+      geom_point(size = 1, color = "#354f52",  data = subset(tmp, Group %in% q  ) )+
+      geom_text_repel(aes(label = Genes),color ="black",size =3.5,
+                      fontface ="italic", 
+                      data = subset(tmp, Group == q) , 
+                      #max.overlaps = Inf,box.padding = 1,
+                      #max.overlaps = 50,box.padding = 0.4,
+                      max.overlaps = 30,box.padding = 0.7,
+                      max.time = 2) +
+      theme_linedraw() +
+      xlim(-3.5,3.5) + ylim(0,30) +
+      ggtitle(paste0("Sanin: PGE2 M2 vs M2 | ",q))
+    )
+    dev.off()
+    PDF(paste0("Ext.Fig.6B.Sanin.",q,".UL"),w=5,h=5)
+    print(
+      ggplot(tmp, aes(x = log2FoldChange, y = logP)) + 
+      geom_point(size = 0.4,color ="grey")+
+      geom_point(size = 1, color = "#354f52",  data = subset(tmp, Group %in% q  ) )+
+      theme_linedraw() +
+      xlim(-3,3) + ylim(0,20) +
+      ggtitle(paste0("Sanin: PGE2 M2 vs M2 | ",q))
+    )
+    dev.off()
+    }
+}
+```
+
+###GSEA
+```{r}
+tmp = df %>% dplyr::select(Genes, avg_log2FC) %>% arrange(avg_log2FC)
+df2 <- fgseaMultilevel(fgsea_sets, stats = deframe(tmp) ) %>% arrange(desc(NES) )
+df2 %>% filter(pathway %in% names(fgsea_sets_H))
+```
+
+#Embedding sensitivity
+```{r}
+#DE = readRDS("~/Library/CloudStorage/OneDrive-Personal/Documents_Onedrive/RStudioProject/scRNA.Public/SunnyWu/Wu.Mt10.DE.Minor.231101.rds")
+df = DE$df
+
+df2 = Wu[[]] %>% dplyr::select(subtype,Sample) %>% as_tibble() %>% as.data.frame()
+df2 = df2[!duplicated(df2),]
+rownames(df2) = df2$Sample
+WuDF$Link.Sample_Histo= df2
+
+tmp = data.frame()
+for(i in df2$Sample){
+  tmp1 = filter(df, Dataset == i)
+  tmp1$Histo = df2[i,"subtype"]
+  tmp = rbind(tmp,tmp1)
+}
+df = tmp
+
+
+df2 = Wu[[]] %>% dplyr::select(Sensitivity.M_Count,Sample) %>% as_tibble() %>% as.data.frame()
+df2 = df2[!duplicated(df2),]
+rownames(df2) = df2$Sample
+WuDF$Link.Sample_Sensitivity.M_Count = df2
+
+tmp = data.frame()
+for(i in df2$Sample){
+  tmp1 = filter(df, Dataset == i)
+  tmp1$Sensitivity.M_Count = df2[i,"Sensitivity.M_Count"]
+  tmp = rbind(tmp,tmp1)
+}
+df = tmp
+
+df2 = Wu[[]] %>% dplyr::select(Sensitivity.Count,Sample) %>% as_tibble() %>% as.data.frame()
+df2 = df2[!duplicated(df2),]
+rownames(df2) = df2$Sample
+WuDF$Link.Sample_Sensitivity.Count = df2
+
+tmp = data.frame()
+for(i in df2$Sample){
+  tmp1 = filter(df, Dataset == i)
+  tmp1$Sensitivity.Count = df2[i,"Sensitivity.Count"]
+  tmp = rbind(tmp,tmp1)
+}
+DE$df2 = tmp
+#saveRDS(DE,"~/Library/CloudStorage/OneDrive-Personal/Documents_Onedrive/RStudioProject/scRNA.Public/SunnyWu/Wu.Mt10.DE.Minor.231101.Added.rds")
+```
+
+
+#----------------------------
+#Correlation of (OXPHOS FoldChange and BulkRNA)
+```{r}
+Idents(Wu) = Wu$orig.ident
+tmp1 = AverageExpression(Wu, assays = "RNA")$RNA
+Exp = t(tmp1) %>% scale() %>% as.data.frame()
+Exp
+
+DE = readRDS("~/Library/CloudStorage/OneDrive-Personal/Documents_Onedrive/RStudioProject/scRNA.Public/SunnyWu/Wu.DE.Minor.231027.rds")
+tmp2 = DE$df %>% filter(Genes %in% unlist(GeneSet$DE$ETC.Ref2) ) %>% filter(Cluster == "Macrophage") %>% dplyr::select(Genes,avg_log2FC,Dataset) %>% spread(key = Genes, value = avg_log2FC) %>% as.data.frame()
+FC = dplyr::select(tmp2, -Dataset) %>% scale() %>% as.data.frame()
+rownames(FC) = tmp2$Dataset
+FC = FC[ , colSums(is.na(FC))==0]
+
+Exp2 = Exp[rownames(FC),]
+
+
+
+Cor.list = list()
+for(k in colnames(FC) ){
+  print(k)
+  table = as.data.frame(matrix(ncol = 9, nrow = ncol(Exp2) ) )
+  rownames(table) = colnames(Exp2)
+  colnames(table) = c("Gene1","Gene2","p_val","t","df","correlation","Method","95%CI.1","95%CI.2")
+  for(i in colnames(Exp2) ){
+    test <- cor.test(FC[,k],Exp2[,i])
+    table[i,] <- c(k,i,test$p.value,test$statistic, test$parameter,test$estimate, test$method,test$conf.int)
+  }
+  Cor.list[[k]] = table
+  saveRDS(Cor.list, "~/Library/CloudStorage/OneDrive-Personal/Documents_Onedrive/RStudioProject/scRNA.Public/SunnyWu/Wu.Cor.list.231031.rds")
+}
+df = data.frame(matrix(ncol = ncol(Exp2),
+                       nrow = ncol(FC)) )
+colnames(df) = colnames(Exp2)
+rownames(df) = colnames(FC)
+for(i in names(Cor.list) ){
+  df[i,]= Cor.list[[i]][colnames(df),"correlation"]
+}
+Cor.list$df = df
+#saveRDS(Cor.list, "~/Library/CloudStorage/OneDrive-Personal/Documents_Onedrive/RStudioProject/scRNA.Public/SunnyWu/Wu.Cor.list.231031.rds")
+
+tmp1 = apply(df, 2, function(x) mean(as.numeric(x)) )
+df2 = data.frame("Genes" = names(tmp1), "CorrelationSum" = tmp1)
+df2 = df2 %>% arrange(CorrelationSum)
+
+
+Idents(Wu) = factor(Wu$orig.ident, levels = sort(unique(as.character(Wu$orig.ident)) ) )
+DotPlot(Wu,features = c("TNFSF4","TNFRSF4","FOXP3","TNFRSF9","CCL17","CCL22","PTGS1","PTGER2","PTGER4","PTGS2","IL6","CXCL2","FOS","NR4A1","VEGFD","CXCL8") ) + Dot_axis90 + scale_viridis + Dot_scale
+
+DotPlot(M, features = c("PTGER4") )$data %>% arrange(desc(avg.exp))
+```
+
+##Chemokine
+```{r}
+filter(tmp2, Genes %in% GeneSet$DE$CMX)
+DotPlot(Wu,features =filter(tmp2, Genes %in% GeneSet$DE$CMX)$Genes )  + Dot_axis90 + scale_viridis
+```
+##Intrinsic OXPHOS -> PTGER4-meadited OXPHOS down
+```{r}
+tmp1 = fgseaMultilevel(fgsea_sets_H, stats = deframe(tmp2) ) %>% arrange(desc(NES) )
+tmp1 %>% arrange(desc(NES))
+
+DotPlot(Wu,features = GeneSet$DE$ETC.Ref2 )  + Dot_axis90 + scale_viridis
+
+M = subset(Wu, celltype_minor == "Macrophage")
+Idents(M) = factor(M$orig.ident, levels = sort(unique(as.character(M$orig.ident)) ) )
+DotPlot(M, features = GeneSet$DE$ETC.Ref2) + Dot_axis90 + scale_viridis
+```
+
+#--------Plot--------
+
+
+#Heatmap PTGER4Hi-Low
+```{r}
+DE = readRDS("~/Library/CloudStorage/OneDrive-Personal/Documents_Onedrive/RStudioProject/scRNA.Public/SunnyWu/Wu.Mt10.DE.Minor.231101.Added.rds")
+df = DE$df2 # %>% filter(!Sensitivity.Count == "Exclude")
+
+selected.cluster = c("T cells CD8+","Macrophage","Monocyte","DCs")
+selected.cluster = c("T cells CD8+","Macrophage")
+for(i in c("ETC.Ref2") ){
+  selected.genes = unlist( GeneSet$DE[[i]] ) %>% unique()
+  df1 = filter(df, Genes %in% selected.genes )  %>% filter(Cluster %in% selected.cluster)
+  a = max(abs(df1$avg_log2FC))+0.2 
+  plot = ggplot(df1, aes_string(y = "Dataset" , x = "Genes"  ) ) + 
+    facet_grid(Cluster + Sensitivity.Count ~ ., scales = "free", space="free", switch = "y") + 
+    theme_classic() + 
+    Dot_axis90A + 
+    ggtitle(i)+
+    geom_tile(color = "white",aes(fill =avg_log2FC)) +  
+    scale_fill_gradientn(colours = Col.HiLow.7Shades,
+                         values =  c( 0,0.45,0.5,0.55,1 ),                                 
+                         limits = c(-a,a) ) +
+    theme(plot.title = element_blank(),
+          axis.text.x = element_text(size =Fsize, family = "Arial", color = "black", face = "italic",angle = 90, hjust =1, vjust =0.3),
+          axis.text.y = element_text(size =Fsize, family = "Arial", color = "black"),
+          axis.line = element_line(colour = 'black', size = 0.25),
+          axis.ticks = element_line(colour = 'black', size = 0.15),
+          axis.ticks.length = unit(0.05,"cm"),
+          axis.title = element_blank(), 
+          strip.text.y.left = element_text(angle = 0),
+          strip.text.x.top = element_text(size =Fsize, family = "Arial",colour = "black",
+                                          margin = margin(t = 0.1, r = 0, b = 0.1, l = 0, unit = "cm") ),
+          strip.background = element_rect(fill = "white",linewidth = 0.35),
+          #strip.background.y =  element_blank(),
+          strip.placement = "outside",
+          legend.key.size = unit(0.1, 'in'),
+                        legend.title = element_text(size = Fsize),
+                        legend.text = element_text(size=Fsize-1),
+          
+          #plot.margin = margin(t = 0, r = 0, b = 0, l = 0  ),
+          legend.position = "bottom"
+          )
+  
+                
+  PNG(paste0("Wu.DE.perSpec.Heatmap.Sensitivity_Count.All.",i), h = 4.5, w =  8,r=400)
+  print(plot)
+  dev.off()
+}
+
+```
+##Sort by sample
+```{r}
+df$Dataset = factor(df$Dataset, sort(unique(as.character(df$Dataset))))
+for(j in c("Dataset","Rank.PTGS1","Rank.M.PTGS1", "Rank.PTGS2","Rank.M.PTGS2","Rank.PTGSv1","Rank.PTGSv2","Rank.mt")){
+for(i in c("ETC.Ref2") ){
+  selected.genes = unlist( GeneSet$DE[[i]] ) %>% unique()
+  df1 = filter(df, Genes %in% selected.genes )  %>% filter(Cluster %in% selected.cluster)
+  a = max(abs(df1$avg_log2FC))+0.2 
+  plot = ggplot(df1, aes_string(y = "Dataset" , x = "Genes"  ) ) + 
+    facet_grid(Cluster +Group ~ ., scales = "free", space="free", switch = "y") + 
+    theme_classic() + 
+    Dot_axis90A + 
+    ggtitle(i)+
+    geom_tile(color = "white",aes(fill =avg_log2FC)) +  
+    scale_fill_gradientn(colours = Col.HiLow.7Shades,
+                         values =  c( 0,0.45,0.5,0.55,1 ),                                 
+                         limits = c(-a,a) ) +
+    theme(plot.title = element_blank(),
+          axis.text.x = element_text(size =Fsize, family = "Arial", color = "black", face = "italic",angle = 90, hjust =1, vjust =0.3),
+          axis.text.y = element_text(size =Fsize, family = "Arial", color = "black"),
+          axis.line = element_line(colour = 'black', size = 0.25),
+          axis.ticks = element_line(colour = 'black', size = 0.15),
+          axis.ticks.length = unit(0.05,"cm"),
+          axis.title = element_blank(), 
+          #strip.text.y = element_blank(),
+          strip.text.x.top = element_text(size =Fsize, family = "Arial",colour = "black",
+                                          margin = margin(t = 0.1, r = 0, b = 0.1, l = 0, unit = "cm") ),
+          strip.background = element_rect(fill = "white",linewidth = 0.35),
+          #strip.background.y =  element_blank(),
+          strip.placement = "outside",
+          legend.key.size = unit(0.1, 'in'),
+                        legend.title = element_text(size = Fsize),
+                        legend.text = element_text(size=Fsize-1),
+          
+          #plot.margin = margin(t = 0, r = 0, b = 0, l = 0  ),
+          legend.position = "bottom"
+          )
+  
+                
+  PNG(paste0("Wu.DE.perSpec.Heatmap.Sensitivity2.",i,".sort_",j), h = 8, w =  8,r=400)
+  print(plot)
+  dev.off()
+}
+}
+```
+
+##Sort by Chemokine
+```{r}
+Wu <- readRDS("~/Library/CloudStorage/OneDrive-Personal/Documents_Onedrive/RStudioProject/scRNA.Public/SunnyWu/SunnyWu.Mt10.PTGER4Group.231101.rds")
+Idents(Wu) = Wu$orig.ident
+tmp1 = AverageExpression(Wu, features = GeneSet$DE$CMX)$RNA %>% t() %>% as_tibble(rownames = "Sample") %>% gather(key = "Genes", value = "Expression", -Sample) %>% arrange(Expression)
+DE <- readRDS("~/Library/CloudStorage/OneDrive-Personal/Documents_Onedrive/RStudioProject/scRNA.Public/SunnyWu/Wu.Mt10.DE.Minor.231101.Added.rds")
+df = DE$df2
+AverageExpression(Wu, features = c("CCL2","CCL3"))
+selected.cluster
+#for(k in unique(tmp1$Genes) ){
+for(k in c("CCL2","CCL3", "CCL4") ){
+  for(i in c("ETC.Ref2") ){
+  selected.genes = unlist( GeneSet$DE[[i]] ) %>% unique()
+  df1 = filter(df, Genes %in% selected.genes )  %>% filter(Cluster %in% selected.cluster) %>% filter(Sensitivity.Count %in% c("Sensitive","Insensitive"))
+  df1$Dataset = factor(df1$Dataset, levels = filter(tmp1, Genes == k)$Sample )
+  a = max(abs(df1$avg_log2FC))+0.2 
+  plot = ggplot(df1, aes_string(y = "Dataset" , x = "Genes"  ) ) + 
+    facet_grid(Cluster ~ ., scales = "free", space="free", switch = "y") + 
+    theme_classic() + 
+    Dot_axis90A + 
+    ggtitle(paste0("Heatmap PTGER4hi-low (sort by ",k, " )" ) )+
+    geom_tile(color = "white",aes(fill =avg_log2FC)) +  
+    scale_fill_gradientn(colours = Col.HiLow.7Shades,
+                         values =  c( 0,0.45,0.5,0.55,1 ),                                 
+                         limits = c(-a,a) ) +
+    theme(axis.text.x = element_text(size =Fsize, family = "Arial", color = "black", face = "italic",angle = 90, hjust =1, vjust =0.3),
+          axis.text.y = element_text(size =Fsize, family = "Arial", color = "black"),
+          axis.line = element_line(colour = 'black', size = 0.25),
+          axis.ticks = element_line(colour = 'black', size = 0.15),
+          axis.ticks.length = unit(0.05,"cm"),
+          axis.title = element_blank(), 
+          #strip.text.y = element_blank(),
+          strip.text.x.top = element_text(size =Fsize, family = "Arial",colour = "black",
+                                          margin = margin(t = 0.1, r = 0, b = 0.1, l = 0, unit = "cm") ),
+          strip.background = element_rect(fill = "white",linewidth = 0.35),
+          #strip.background.y =  element_blank(),
+          strip.placement = "outside",
+          legend.key.size = unit(0.1, 'in'),
+                        legend.title = element_text(size = Fsize),
+                        legend.text = element_text(size=Fsize-1),
+          
+          #plot.margin = margin(t = 0, r = 0, b = 0, l = 0  ),
+          legend.position = "bottom"
+          )
+  
+                
+  PNG(paste0("Wu.DE.perSpec.Heatmap.",i,".sort_Chemokine.Excluded.V2.",k), h = 3.5, w =  8,r=400)
+  print(plot)
+  dev.off()
+}
+}
+```
+
+
+```{r}
+df = DE$df
+selected.cluster = c("T cells CD8+","Macrophage","Monocyte","DCs")
+df$Dataset = factor(df$Dataset, sort(unique(as.character(df$Dataset))))
+for(j in c("Dataset")){
+for(i in c("ETC.Ref2") ){
+  selected.genes = unlist( GeneSet$DE[[i]] ) %>% unique()
+  df1 = filter(df, Genes %in% selected.genes )  %>% filter(Cluster %in% selected.cluster)
+  df1
+  a = max(abs(df1$avg_log2FC))+0.2 
+  plot = ggplot(df1, aes_string(y = j , x = "Genes"  ) ) + 
+    facet_grid(Cluster ~ ., scales = "free", space="free", switch = "y") + 
+    theme_classic() + 
+    Dot_axis90A + 
+    ggtitle(i)+
+    geom_tile(color = "white",aes(fill =avg_log2FC)) +  
+    scale_fill_gradientn(colours = Col.HiLow.7Shades,
+                         values =  c( 0,0.45,0.5,0.55,1 ),                                 
+                         limits = c(-a,a) ) +
+    theme(plot.title = element_blank(),
+          axis.text.x = element_text(size =Fsize, family = "Arial", color = "black", face = "italic",angle = 90, hjust =1, vjust =0.3),
+          axis.text.y = element_text(size =Fsize, family = "Arial", color = "black"),
+          axis.line = element_line(colour = 'black', size = 0.25),
+          axis.ticks = element_line(colour = 'black', size = 0.15),
+          axis.ticks.length = unit(0.05,"cm"),
+          axis.title = element_blank(), 
+          #strip.text.y = element_blank(),
+          strip.text.x.top = element_text(size =Fsize, family = "Arial",colour = "black",
+                                          margin = margin(t = 0.1, r = 0, b = 0.1, l = 0, unit = "cm") ),
+          strip.background = element_rect(fill = "white",linewidth = 0.35),
+          #strip.background.y =  element_blank(),
+          strip.placement = "outside",
+          legend.key.size = unit(0.1, 'in'),
+                        legend.title = element_text(size = Fsize),
+                        legend.text = element_text(size=Fsize-1),
+          
+          #plot.margin = margin(t = 0, r = 0, b = 0, l = 0  ),
+          legend.position = "bottom"
+          )
+  
+                
+  PNG(paste0("Wu.DE.perSpec.Heatmap.sort.Name.",i,".",j), h = 8, w =  8,r=400)
+  print(plot)
+  dev.off()
+}
+}
+```
+
+
+#Heatmap of scale expression
+```{r}
+M = subset(Wu, Identity.primary == "Myeloid")
+df1
+for(i in c("Rank.PTGS1","Rank.PTGS2")){
+  Idents(M) = i
+  df1 = DotPlot(M, features = c("CCL3","CCL4","CXCL8","IL1A","IL1B"))$data
+  PNG(paste0("Wu.M.RelativeExpression.CMX.",i), h = 8, w =  5)
+  print(
+  ggplot(df1, aes(y = id , x = features.plot  ) ) +
+    #facet_grid(Cluster ~ ., scales = "free", space="free", switch = "y") + 
+    theme_classic() + 
+    ggtitle(i)+
+    geom_tile(color = "white",aes(fill =avg.exp.scaled)) +  
+    scale_fill_gradientn(colours = Col.HiLow.7Shades,
+                         values =  c( 0,0.35,0.5,0.65,1 ),                                 
+                         limits = c(-a,a) ) +
+    theme(plot.title = element_blank(),
+          axis.text.x = element_text(size =Fsize, family = "Arial", color = "black", face = "italic",angle = 90, hjust =1, vjust =0.3),
+          axis.text.y = element_text(size =Fsize, family = "Arial", color = "black"),
+          axis.line = element_line(colour = 'black', size = 0.25),
+          axis.ticks = element_line(colour = 'black', size = 0.15),
+          axis.ticks.length = unit(0.05,"cm"),
+          axis.title = element_blank(), 
+          #strip.text.y = element_blank(),
+          strip.text.x.top = element_text(size =Fsize, family = "Arial",colour = "black",
+                                          margin = margin(t = 0.1, r = 0, b = 0.1, l = 0, unit = "cm") ),
+          strip.background = element_rect(fill = "white",linewidth = 0.35),
+          #strip.background.y =  element_blank(),
+          strip.placement = "outside",
+          legend.key.size = unit(0.1, 'in'),
+                        legend.title = element_text(size = Fsize),
+                        legend.text = element_text(size=Fsize-1),
+          
+          #plot.margin = margin(t = 0, r = 0, b = 0, l = 0  ),
+          legend.position = "bottom"
+          )
+  )
+  dev.off()
+}
+
+
+tmp1 = WuDF$Link.Sample_Sensitivity.M_Count %>% arrange(Sample) %>% arrange(Sensitivity.M_Count)
+Idents(Wu) = factor(Wu$Sample, levels = tmp1$Sample)
+Wu2 = subset(Wu, Sensitivity.M_Count %in% c("Sensitive","Insensitive"))
+DotPlot(Wu2, features = GeneSet$DE$CMX) + Dot_scale+Dot_axis90+scale_viridis
+df1 = DotPlot(Wu2, features = c("CCL3","CCL4","CXCL8","IL1A","IL1B","PTGS1","PTGS2","PTGER2","PTGER4"))$data
+df1 = DotPlot(Wu2, features = GeneSet$DE$CMX )$data
+df1$Sample = df1$id
+df1 = left_join(df1,WuDF$Link.Sample_Sensitivity.M_Count)
+df1
+for(i in 1  ){
+  a = max(abs(df1$avg.exp.scaled)) + 0.2
+  PNG(paste0("Wu.RelativeExpression.CMX"), h = 2, w =  12,r=400)
+  print(
+  ggplot(df1, aes(y = id , x = features.plot  ) ) +
+    facet_grid(Sensitivity.M_Count ~ ., scales = "free", space="free", switch = "y") + 
+    theme_classic() + 
+    ggtitle(i)+
+    geom_tile(color = "white",aes(fill =avg.exp.scaled)) +  
+    scale_fill_gradientn(colours = Col.HiLow.7Shades,
+                         values =  c( 0,0.35,0.5,0.65,1 ),                                 
+                         limits = c(-a,a) ) +
+    theme(plot.title = element_blank(),
+          axis.text.x = element_text(size =Fsize, family = "Arial", color = "black", face = "italic",angle = 90, hjust =1, vjust =0.3),
+          axis.text.y = element_text(size =Fsize, family = "Arial", color = "black"),
+          axis.line = element_line(colour = 'black', size = 0.25),
+          axis.ticks = element_line(colour = 'black', size = 0.15),
+          axis.ticks.length = unit(0.05,"cm"),
+          axis.title = element_blank(), 
+          #strip.text.y = element_blank(),
+          strip.text.x.top = element_text(size =Fsize, family = "Arial",colour = "black",
+                                          margin = margin(t = 0.1, r = 0, b = 0.1, l = 0, unit = "cm") ),
+          strip.background = element_rect(fill = "white",linewidth = 0.35),
+          #strip.background.y =  element_blank(),
+          strip.placement = "outside",
+          legend.key.size = unit(0.1, 'in'),
+                        legend.title = element_text(size = Fsize),
+                        legend.text = element_text(size=Fsize-1),
+          
+          #plot.margin = margin(t = 0, r = 0, b = 0, l = 0  ),
+          legend.position = "bottom"
+          )
+  )
+  dev.off()
+}
+
+VlnPlot(Wu2,"CCL4")
+tmp1 = AverageExpression(Wu2, features = GeneSet$DE$CMX)$RNA
+write.csv(tmp1,"~/Library/CloudStorage/OneDrive-Personal/Documents_Onedrive/RStudioProject/scRNA.Public/SunnyWu/Fig/231101_Mt10/Wu.CMX.expression.csv" )
+```
+
+```{r}
+table(Wu2$Sensitivity.M_Count, Wu2$Rank.M.PTGS2 )
+```
+
+
+#--------Save--------
+```{r}
+saveRDS(WuDF, "~/Library/CloudStorage/OneDrive-Personal/Documents_Onedrive/RStudioProject/scRNA.Public/SunnyWu/WuDF.231027.rds")
+```
+

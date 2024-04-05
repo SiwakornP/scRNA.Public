@@ -1,0 +1,414 @@
+---
+title: "HGSOC Weigu 2022"
+author: "Siwakorn"
+date: "9/1/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+#Read Count data
+
+```{r}
+Dir = c(paste0("Norm",1:5),paste0("Cancer",1:7))
+tmp = list()
+Meta = data.frame()
+for(i in Dir){
+      print(i)
+      tmp[[i]] = Read10X(data.dir = paste0("//home/siwakorn/scRNA.PB/Weiguo.2022/GSE184880/",i,"/"))
+      tmp2 = data.frame("CB.Original" = colnames(tmp[[i]]))
+      colnames(tmp[[i]]) = paste0(colnames(tmp[[i]]),"_",i)
+      tmp2$CB.New = colnames(tmp[[i]])
+      tmp2$Sample = i
+      Meta = rbind(Meta,tmp2)
+}
+rownames(Meta) = Meta$CB.New
+
+tmp1 = tmp[[1]]
+for(i in 2:12){
+      tmp1 = cbind(tmp1,tmp[[i]])
+}
+dim(tmp1)
+lapply(tmp,ncol) %>% unlist() %>% sum()
+
+nrow(Meta)
+intersect(Meta$CB.New,colnames(tmp1)) %>% length()
+
+Weiguo = CreateSeuratObject(counts = tmp1, project = "Weiguo2022", meta.data = Meta)
+saveRDS(Weiguo, file = "//home/siwakorn/scRNA.PB/Weiguo.2022/RDS/Weiguo.PrimaryObject.rds")
+tmp = 0
+tmp1 = 0
+tmp2 = 0
+gc()
+Weiguo[[]]
+```
+
+#Normalization and Harmony integration
+```{r}
+Weiguo = readRDS(file = "//home/siwakorn/scRNA.PB/Weiguo.2022/RDS/Weiguo.PrimaryObject.rds")
+Weiguo[["percent.mt"]] <- PercentageFeatureSet(Weiguo, pattern = "^MT-")
+Weiguo = subset(Weiguo, subset = percent.mt < 10 )
+Weiguo = Clustering1(Weiguo,dim=30,res=1, batch = "Sample")
+Weiguo = ReResolution(Weiguo,res = 0.3)
+DimPlot(Weiguo)
+WeiguoDF = list()
+WeiguoDF$AllMarkers.primary = FindAllMarkers(Weiguo, max.cells.per.ident = 300)
+WeiguoDF$AllMarkers.primary %>% group_by(cluster) %>% top_n(n=20, wt=avg_log2FC)
+Idents(Weiguo) = Weiguo$RNA_snn_res.0.3
+Weiguo = RenameIdents(Weiguo,
+                     '0' = "T-cells",
+                     '2' = "T-cells",
+                     '14' = "B-cells",
+                     '7' = "Plasma-cells",
+                     '3' = "Myeloid",
+                     '4' = "Epithelial",
+                     '1' = "Fibroblast",
+                     '5' = "Endothelial",
+                     '6' = "T-cells",
+                     '8' = "Epithelial",
+                     '9' = "Fibroblast",
+                     '10' = "T-cells",
+                     '11' = "Fibroblast",
+                     '12' = "Fibroblast",
+                     '13' = "Epithelial",
+                     '15' = "Epithelial",
+                     '16' = "T-cells",
+                     '17' = "Endothelial",
+                     '18' = "Epithelial" 
+)
+Weiguo$Identity.primary = Idents(Weiguo)
+WeiguoDF$Cols.Identity.primary = c("#52a675","#4267ac","#6a4c93","#ff5c33","#ffca3a","#ff8133","#ff1f26" )
+```
+
+##Visualization
+```{r,fig.width=7,fig.height =6}
+for(i in 1){
+      png(filename = "/home/siwakorn/scRNA.PB/Fig/221024/Weiguo.DM.1A.221024.png", width = 7, height = 7, units ="in", res= 400)
+      print(
+            DimPlot(Weiguo,label =F,cols = WeiguoDF$Cols.Identity.primary ) + NoLegend() )
+      dev.off()
+}
+
+for(i in 1){
+      png(filename = "/home/siwakorn/scRNA.PB/Fig/221024/Weiguo.DM.2.221024.png", width = 9, height = 7, units ="in", res= 400)
+      print(
+            DimPlot(Weiguo,label =F,cols = WeiguoDF$Cols.Identity.primary) )
+      dev.off()
+}
+
+
+for(i in c("PTPRC","PECAM1","COL1A2","MS4A1","CD3E","CD68","CSF1R","IGHG1","KRT18","MKI67","PTGS1","PTGS2","PTGES","PTGES2","PTGES3","PTGER2","PTGER4","PTGER1","PTGER3","HDC")){
+      png(filename = paste0("/home/siwakorn/scRNA.PB/Fig/221024/Weiguo.FP.",i,".png"), width = 7, height = 7, units ="in", res= 400)
+      print(FeaturePlot(Weiguo,features = i)+ scale_orange + NoLegend() + theme(plot.title = element_text(size = 20, face= "bold", colour = "firebrick") ))
+      dev.off()
+}
+```
+
+```{r}
+DimPlot(Weiguo,label=T, cols = c("#52a675","#4267ac","#6a4c93","#ff5c33","#ffca3a","#ff8133","#ff1f26" ))
+
+saveRDS(Weiguo, file = "//home/siwakorn/scRNA.PB/Weiguo.2022/RDS/Weiguo.Harmony.221024.rds")
+#Weiguo = readRDS(file = "//home/siwakorn/scRNA.PB/Weiguo.2022/RDS/Weiguo.Harmony.220901.rds")
+
+```
+
+```{r}
+for(i in c(selected.genes,"MKI67")){
+      print(FeaturePlot(Weiguo, features = i) + scale_orange )
+}
+```
+
+
+
+#Ranking
+##PTGS1
+```{r}
+Idents(Weiguo) = Weiguo$Sample
+tmp = AverageExpression(Weiguo, features = "PTGS1")$RNA
+tmp = tmp %>% t() %>% as.data.frame() 
+colnames(tmp) = "PTGS1"
+tmp = arrange(tmp,desc(PTGS1))
+tmp$Rank.PTGS1 = paste0("PTGS1_",1:nrow(tmp))
+tmp$Sample = rownames(tmp)
+tmp
+tmp2 = left_join(as_tibble(Weiguo[[]],rownames = "CB"), tmp, by = "Sample" )
+tmp1 = tmp2$Rank.PTGS1
+names(tmp1) = tmp2$CB
+Weiguo <- AddMetaData(Weiguo, metadata = tmp1, col.name = "Rank.PTGS1")
+Weiguo$Rank.PTGS1 = factor(Weiguo$Rank.PTGS1,levels =  paste0("PTGS1_",1:nrow(tmp)) )
+```
+##PTGS2
+```{r}
+Idents(Weiguo) = Weiguo$Sample
+tmp = AverageExpression(Weiguo, features = "PTGS2")$RNA
+tmp = tmp %>% t() %>% as.data.frame() 
+colnames(tmp) = "PTGS2"
+tmp = arrange(tmp,desc(PTGS2))
+tmp$Rank.PTGS2 = paste0("PTGS2_",1:nrow(tmp))
+tmp$Sample = rownames(tmp)
+tmp2 = left_join(as_tibble(Weiguo[[]],rownames = "CB"), tmp, by = "Sample" )
+tmp1 = tmp2$Rank.PTGS2
+names(tmp1) = tmp2$CB
+Weiguo <- AddMetaData(Weiguo, metadata = tmp1, col.name = "Rank.PTGS2")
+Weiguo$Rank.PTGS2 = factor(Weiguo$Rank.PTGS2,levels =  paste0("PTGS2_",1:nrow(tmp)) )
+table(Weiguo$Sample,Weiguo$Rank.PTGS1)
+```
+
+##PTGS
+```{r}
+Idents(Weiguo) = Weiguo$Sample
+tmp = AverageExpression(Weiguo, features = c("PTGS1","PTGS2"))$RNA
+tmp = tmp %>% t() %>% as.data.frame() 
+tmp$PTGSv1 = tmp$PTGS1+tmp$PTGS2
+tmp$PTGS1 = scale(tmp$PTGS1)
+tmp$PTGS2 = scale(tmp$PTGS2)
+tmp$PTGSv2 = tmp$PTGS1+tmp$PTGS2
+tmp = arrange(tmp,desc(PTGSv1))
+tmp$Rank.PTGSv1 =  paste0("PTGSv1_",1:nrow(tmp))
+tmp = arrange(tmp,desc(PTGSv2))
+tmp$Rank.PTGSv2 =  paste0("PTGSv2_",1:nrow(tmp))
+tmp = tmp %>% as_tibble(rownames = "Sample")
+tmp2 = left_join(as_tibble(Weiguo[[]],rownames = "CB"), tmp, by = "Sample" )
+
+tmp3 = tmp2$Rank.PTGSv1
+names(tmp3) = tmp2$CB
+Weiguo <- AddMetaData(Weiguo, metadata = tmp3, col.name = "Rank.PTGSv1")
+Weiguo$Rank.PTGSv1 = factor(Weiguo$Rank.PTGSv1, levels =  paste0("PTGSv1_",1:nrow(tmp)) )
+
+tmp3 = tmp2$Rank.PTGSv2
+names(tmp3) = tmp2$CB
+Weiguo <- AddMetaData(Weiguo, metadata = tmp3, col.name = "Rank.PTGSv2")
+Weiguo$Rank.PTGSv2 = factor(Weiguo$Rank.PTGSv2, levels =  paste0("PTGSv2_",1:nrow(tmp)) )
+```
+
+```{r}
+Idents(Weiguo) = Weiguo$Rank.PTGS2
+DotPlot(Weiguo,features = GENE$PGE) + Dot_axis90 + Dot_scale + scale_SummerSea2
+```
+##PTGS by Myeloid
+```{r}
+for(i in GENE$PGE){
+      print(FeaturePlot(Weiguo, i) + scale_orange)
+}
+MyeloidG = subset(Weiguo, Identity.primary == "Myeloid")
+Idents(MyeloidG) = MyeloidG$Rank.PTGS1
+DotPlot(MyeloidG, features = GENE$PGE) + Dot_axis90
+
+Idents(MyeloidG) = MyeloidG$Sample
+tmp = AverageExpression(MyeloidG, features = c("PTGS1","PTGS2"))$RNA
+tmp = tmp %>% t() %>% as.data.frame() %>% as_tibble(rownames = "Sample")
+tmp =arrange(tmp,desc(PTGS1))
+tmp$Rank.My.PTGS1 = paste0("M.PTGS1_",1:nrow(tmp) )
+tmp =arrange(tmp,desc(PTGS2))
+tmp$Rank.My.PTGS2 = paste0("M.PTGS2_",1:nrow(tmp) )
+RankMy = tmp
+table(RankMy$Rank.My.PTGS1,RankMy$Rank.My.PTGS2)
+tmp2 = left_join(as_tibble(MyeloidG[[]],rownames = "CB"),tmp, by = "Sample")
+tmp3 = tmp2$Rank.My.PTGS1
+names(tmp3) = tmp2$CB
+
+tmp$PTGSv1 = tmp$PTGS1+tmp$PTGS2
+tmp$PTGS1 = scale(tmp$PTGS1)
+tmp$PTGS2 = scale(tmp$PTGS2)
+```
+
+#PGE2 production
+```{r}
+Weiguo2$Sample %>% as.factor() %>% summary()
+Weiguo2 = subset(Weiguo, Sample %in% paste0("Cancer",1:7) )
+Weiguo2
+Idents(Weiguo2) = Weiguo2$Identity.primary
+df= data.frame()
+for(i in unique(Weiguo2$Sample)){
+      tmp1 = subset(Weiguo, Sample == i)
+      tmp2 = DotPlot(tmp1, features = GENE$PGE)$data
+      tmp2$Sample = i
+      df= rbind(df,tmp2)
+}
+df$id = RevIden(df$id)
+
+scale_ByzantiumOrange = scale_color_gradientn(colours = c("#7B235E","#8C286B","#A41C59","#BB1046","#E14D2A","#FD841F"))
+for(i in 1){
+      png(filename = "/home/siwakorn/scRNA.PB/Fig/221024/Weiguo.DP2.PGE2production.221030.png", width = 22, height = 4, units ="in", res= 400)
+      print(
+            ggplot(df, aes(x = features.plot, y = id, color = avg.exp.scaled, size = pct.exp)) + geom_point() + 
+            scale_ByzantiumOrange+
+            theme_bw()+
+            facet_grid(.~Sample , scales = "free", space="free", switch = "y") +
+                  theme(axis.title = element_blank(), 
+                        axis.text.x = element_text(size =14, face = "bold",angle = 90,color = "black",vjust=0.5, hjust =1),
+                        axis.text.y = element_text(size =14, face = "bold", color = "black"),
+                        strip.text.x = element_text(size =18, face = "bold", color = "white",angle = 0),
+                        strip.background = element_rect(fill = "black"),
+                        strip.placement = "outside",
+                        legend.position = "bottom"
+                        )
+      )
+      dev.off()
+}
+
+
+df= data.frame()
+for(i in unique(Weiguo2$Sample)){
+      tmp1 = subset(Weiguo, Sample == i)
+      tmp2 = DotPlot(tmp1, features = GENE$PGE2)$data
+      tmp2$Sample = i
+      df= rbind(df,tmp2)
+}
+df$id = RevIden(df$id)
+
+
+for(i in 1){
+      png(filename = "/home/siwakorn/scRNA.PB/Fig/221024/Weiguo.DP2.PGE2production2.221030.png", width = 16, height = 4, units ="in", res= 400)
+      print(
+            ggplot(df, aes(x = features.plot, y = id, color = avg.exp.scaled, size = pct.exp)) + geom_point() + 
+            scale_ByzantiumOrange+
+            theme_bw()+
+            facet_grid(.~Sample , scales = "free", space="free", switch = "y") +
+                  theme(axis.title = element_blank(), 
+                        axis.text.x = element_text(size =14, face = "bold",angle = 90,color = "black",vjust=0.5, hjust =1),
+                        axis.text.y = element_text(size =14, face = "bold", color = "black"),
+                        strip.text.x = element_text(size =18, face = "bold", color = "white",angle = 0),
+                        strip.background = element_rect(fill = "black"),
+                        strip.placement = "outside",
+                        legend.position = "bottom"
+                        )
+      )
+      dev.off()
+}
+
+
+```
+
+#Tcell 
+
+```{r}
+Idents(Weiguo) = Weiguo$Identity.primary
+CD3G = subset(Weiguo, idents = "T-cells")
+CD3G = Clustering1(CD3G)
+for(i in 1){
+      print(DimPlot(CD3G,label=T))
+      print(FeaturePlot(CD3G, features = "CD3E"))
+      print(FeaturePlot(CD3G, features = "CD8A"))
+      print(FeaturePlot(CD3G, features = "TCF7"))
+}
+```
+
+##CD8
+```{r}
+CD8G = subset(CD3G, idents=c(0,2,5,6,7,11,12,13,15))
+CD8G = Clustering1(CD8G)
+for(i in 1){
+      print(DimPlot(CD8G,label=T))
+      print(FeaturePlot(CD8G, features = "CD3E"))
+      print(FeaturePlot(CD8G, features = "CD8A"))
+      print(FeaturePlot(CD8G, features = "TCF7"))
+      print(VlnPlot(CD8G,"CD8A"))
+}
+
+CD8G = subset(CD8G,idents = c(1:9,11:13,16))
+
+saveRDS(CD8G, file = "//home/siwakorn/scRNA.PB/Weiguo.2022/RDS/Weiguo.CD8.Harmony.221024.rds")
+RankMy
+tmp2 = left_join(as_tibble(CD8G[[]], rownames = "CB"), RankMy, by = "Sample" )
+t
+tmp3= tmp2$Rank.My.PTGS1
+names(tmp3) = tmp2$CB
+length(tmp3)
+CD8G = AddMetaData(CD8G, metadata = tmp3, col.name = "Rank.My.PTGS1")
+CD8G$Rank.My.PTGS1 = factor(CD8G$Rank.My.PTGS1, levels = paste0("M.PTGS1_",1:length(levels(CD8G$Rank.My.PTGS1))) )
+tmp3= tmp2$Rank.My.PTGS2
+names(tmp3) = tmp2$CB
+length(tmp3)
+CD8G = AddMetaData(CD8G, metadata = tmp3, col.name = "Rank.My.PTGS2")
+CD8G$Rank.My.PTGS2 = factor(CD8G$Rank.My.PTGS2, levels = paste0("M.PTGS2_",1:length(levels(CD8G$Rank.My.PTGS2))) )
+table(CD8G$Rank.My.PTGS1,CD8G$Rank.My.PTGS2)
+```
+
+
+```{r,fig.width=16}
+selected.genes =c("TCF7", "LEF1", "IL7R", "XCL1", "GPR183", "CCR7", "KLF2", "RASA3", "FAM65B", "CDC25B", "FGFBP2", "LYAR", "SLAMF6", "C100ORF54", "LINC00861", "RASGRP2", "P2RY8", "SH3BP5", "SLCO3A1", "PXN", "CD27", "S1PR1", "S1PR4","GZMB", "GZMA", "PRF1", "GNLY", "HAVCR2", "ENTPD1","CD69", "CCL3", "ITGA1", "HLA-DRB5", "HLA-DQA2", "HLA-DQA1", "PMCH", "PHLDA1","RDH10", "CEBPD", "C4ORF26", "TESC", "CD86", "LAG3", "TIGIT", "PDCD1", "CTLA4", "CD69", "TOX", "BATF", "ITGAE") %>% intersect(rownames(CD8))
+
+CD8G2 = subset(CD8G, Sample %in% paste0("Cancer",1:7))
+CD8G2$Sample %>% as.factor() %>% summary()
+Idents(CD8G2) = CD8G2$Rank.My.PTGS1
+tmp = DotPlot(CD8G2,features = selected.genes)$data
+Idents(CD8G2) = CD8G2$Rank.My.PTGS2
+tmp2 = DotPlot(CD8G2,features = selected.genes)$data
+
+ggplot(tmp, aes(x = features.plot, y = id) )+
+      geom_tile(color = "white", aes(fill = avg.exp.scaled) )+
+      theme_classic()+
+      Dot_axis90+
+      scale_fill_gradientn(colours = Col.HiLow.9Shades, 
+                                        #values = c(0, 0.35, 0.5, 0.65, 1), 
+                                          values = rescale(c(min(tmp$avg.exp.scaled),0,max(tmp$avg.exp.scaled)) ))+
+                  theme(axis.title = element_blank(), 
+                        axis.text.x = element_text(size =14, face = "bold"),
+                        axis.text.y = element_text(size =14, face = "bold", color = "black"),
+                        strip.text.y.left = element_text(size =18, face = "bold", color = "white",angle = 0),
+                        strip.background = element_rect(fill = "black"),
+                        strip.placement = "outside",
+                        legend.position = "bottom"
+                        )
+
+
+ggplot(tmp2, aes(x = features.plot, y = id) )+
+      geom_tile(color = "white", aes(fill = avg.exp.scaled) )+
+      theme_classic()+
+      Dot_axis90+
+      scale_fill_gradientn(colours = Col.HiLow.9Shades, 
+                                        #values = c(0, 0.35, 0.5, 0.65, 1), 
+                                          values = rescale(c(min(tmp$avg.exp.scaled),0,max(tmp$avg.exp.scaled)) ))+
+                  theme(axis.title = element_blank(), 
+                        axis.text.x = element_text(size =14, face = "bold"),
+                        axis.text.y = element_text(size =14, face = "bold", color = "black"),
+                        strip.text.y.left = element_text(size =18, face = "bold", color = "white",angle = 0),
+                        strip.background = element_rect(fill = "black"),
+                        strip.placement = "outside",
+                        legend.position = "bottom"
+                        )
+```
+
+```{r}
+Idents(CD8G2) = CD8G2$Rank.My.PTGS1
+tmp = DotPlot(CD8G2,features = selected.genes)$data
+Idents(CD8G2) = CD8G2$Rank.My.PTGS2
+tmp2 = DotPlot(CD8G2,features = selected.genes)$data
+
+ggplot(tmp, aes(x = features.plot, y = id) )+
+      geom_tile(color = "white", aes(fill = avg.exp.scaled) )+
+      theme_classic()+
+      Dot_axis90+
+      scale_fill_gradientn(colours = Col.HiLow.9Shades, 
+                                        #values = c(0, 0.35, 0.5, 0.65, 1), 
+                                          values = rescale(c(min(tmp$avg.exp.scaled),0,max(tmp$avg.exp.scaled)) ))+
+                  theme(axis.title = element_blank(), 
+                        axis.text.x = element_text(size =14, face = "bold"),
+                        axis.text.y = element_text(size =14, face = "bold", color = "black"),
+                        strip.text.y.left = element_text(size =18, face = "bold", color = "white",angle = 0),
+                        strip.background = element_rect(fill = "black"),
+                        strip.placement = "outside",
+                        legend.position = "bottom"
+                        )
+
+
+ggplot(tmp2, aes(x = features.plot, y = id) )+
+      geom_tile(color = "white", aes(fill = avg.exp.scaled) )+
+      theme_classic()+
+      Dot_axis90+
+      scale_fill_gradientn(colours = Col.HiLow.9Shades, 
+                                        #values = c(0, 0.35, 0.5, 0.65, 1), 
+                                          values = rescale(c(min(tmp$avg.exp.scaled),0,max(tmp$avg.exp.scaled)) ))+
+                  theme(axis.title = element_blank(), 
+                        axis.text.x = element_text(size =14, face = "bold"),
+                        axis.text.y = element_text(size =14, face = "bold", color = "black"),
+                        strip.text.y.left = element_text(size =18, face = "bold", color = "white",angle = 0),
+                        strip.background = element_rect(fill = "black"),
+                        strip.placement = "outside",
+                        legend.position = "bottom"
+                        )
+```
+

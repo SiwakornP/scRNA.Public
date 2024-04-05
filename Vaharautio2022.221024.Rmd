@@ -1,0 +1,317 @@
+---
+title: "HGSOC Vaharautio SciAdv"
+author: "Siwakorn"
+date: "9/1/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+#Read Count data
+```{r}
+tmp1 = read.table(file = "//home/siwakorn/scRNA.PB/Vaharautio.2022/GSE165897_cellInfo_HGSOC.tsv.gz", sep = "\t", header = T)
+rownames(tmp1) = str_replace_all(tmp1$cell,"-",".")
+
+tmp2= read.table(file = "//home/siwakorn/scRNA.PB/Vaharautio.2022/GSE165897_UMIcounts_HGSOC.tsv.gz", sep = "\t", header = T)
+rownames(tmp2) = tmp2$X
+tmp2 = tmp2 %>% dplyr::select(-X)
+
+
+setdiff(colnames(tmp2),rownames(tmp1))
+intersect(colnames(tmp2),rownames(tmp1)) %>% length()
+
+Vahar = CreateSeuratObject(counts = tmp2, project = "Vaharautio", meta.data = tmp1)
+VaharDF = list()
+#saveRDS(Vahar, file = "//home/siwakorn/scRNA.PB/Vaharautio.2022/RDS/Vaharautio.PrimaryObject.rds")
+```
+
+#Normalization and Harmony integration
+```{r}
+Vahar = Clustering1(Vahar,dim=30,res=1, batch = "sample")
+Idents(Vahar) = Vahar$cell_subtype
+
+Vahar = RenameIdents(Vahar,
+                     'T-cells' = "T-cells",
+                     'NK' = "T-cells",
+                     'ILC' = "T-cells",
+                     'B-cells' = "B-cells",
+                     'Plasma-cells' = "Plasma-cells",
+                     'pDC' = "Myeloid",
+                     'Macrophages' = "Myeloid",
+                     'DC-1' = "Myeloid",
+                     'DC-2' = "Myeloid",
+                     'Mast-cells' = "Mast-cells",
+                     'EOC_C11' = "Epithelial",
+                     'EOC_C12' = "Epithelial",
+                     'EOC_C5' = "Epithelial",
+                     'EOC_C4' = "Epithelial",
+                     'EOC_C9' = "Epithelial",
+                     'EOC_C2' = "Epithelial",
+                     'EOC_C1' = "Epithelial",
+                     'EOC_C6' = "Epithelial",
+                     'EOC_C8' = "Epithelial",
+                     'EOC_C7' = "Epithelial",
+                     'EOC_C3' = "Epithelial",
+                     'EOC_C10' = "Epithelial",
+                     'CAF-1' = "Fibroblast",
+                     'CAF-2' = "Fibroblast",
+                     'CAF-3' = "Fibroblast",
+                     'Mesothelial' = "Fibroblast",
+                     'Endothelial' = "Endothelial"
+                     
+                     )
+Vahar$Identity.primary = Idents(Vahar)
+VaharDF$Cols.Identity.primary = c("#52a675","#4267ac","#6a4c93","#ff5c33","#541514","#ffca3a","#ff8133","#ff1f26" )
+DimPlot(Vahar,label=T,  cols = VaharDF$Cols.Identity.primary)
+table(Vahar$sample, Vahar$treatment_phase)
+#saveRDS(Vahar, file = "//home/siwakorn/scRNA.PB/Vaharautio.2022/RDS/Vaharautio.Harmony.221024.rds")
+Vahar = readRDS( file = "//home/siwakorn/scRNA.PB/Vaharautio.2022/RDS/Vaharautio.Harmony.221024.rds")
+```
+
+
+
+##Visualization
+```{r,fig.width=7,fig.height =6}
+Idents(Vahar) = Vahar$seurat_clusters
+for(i in 1){
+      png(filename = "/home/siwakorn/scRNA.PB/Fig/221024/Vahar.DM.1B.221024.png", width = 7, height = 7, units ="in", res= 400)
+      print(
+            DimPlot(Vahar,label =T,cols = VaharDF$Cols.Identity.primary ) + NoLegend() )
+      dev.off()
+}
+
+for(i in 1){
+      png(filename = "/home/siwakorn/scRNA.PB/Fig/221024/Vahar.DM.2.221024.png", width = 9, height = 7, units ="in", res= 400)
+      print(
+            DimPlot(Vahar,label =F,cols = VaharDF$Cols.Identity.primary) )
+      dev.off()
+}
+
+
+for(i in c("PTPRC","PECAM1","COL1A2","MS4A1","CD3E","CD68","CSF1R","IGHG1","KRT18","MKI67","PTGS1","PTGS2","PTGES","PTGES2","PTGES3","PTGER2","PTGER4","PTGER1","PTGER3","HDC")){
+      png(filename = paste0("/home/siwakorn/scRNA.PB/Fig/221024/Vahar.FP.",i,".png"), width = 7, height = 7, units ="in", res= 400)
+      print(FeaturePlot(Vahar,features = i)+ scale_orange + NoLegend() + theme(plot.title = element_text(size = 20, face= "bold", colour = "firebrick") ))
+      dev.off()
+}
+```
+
+#PGE2 production
+```{r}
+Vahar$Sample = Vahar$sample
+Vahar$Sample %>% unique()
+Vahar$treatment_phase %>% as.factor() %>% summary()
+Vahar2 = subset(Vahar, treatment_phase == "treatment-naive")
+Vahar2[[]]
+df= data.frame()
+for(i in unique(Vahar2$Sample)){
+      tmp1 = subset(Vahar2, Sample == i)
+      tmp2 = DotPlot(tmp1, features = GENE$PGE2)$data
+      tmp2$Sample = i
+      df= rbind(df,tmp2)
+}
+df$id = RevIden(df$id)
+df2 = filter(df, features.plot %in% c("PTGS1","PTGS2") )
+
+for(i in 1){
+      png(filename = "/home/siwakorn/scRNA.PB/Fig/221024/Vahar.DP2.PGE2production2.221030.png", width = 12, height = 4, units ="in", res= 400)
+      print(
+            ggplot(df, aes(x = features.plot, y = id, color = avg.exp.scaled, size = pct.exp)) + geom_point() + 
+            scale_ByzantiumOrange+
+            theme_bw()+
+            facet_grid(.~Sample , scales = "free", space="free", switch = "y") +
+                  theme(axis.title = element_blank(), 
+                        axis.text.x = element_text(size =14, face = "bold",angle = 90,color = "black",vjust=0.5, hjust =1),
+                        axis.text.y = element_text(size =14, face = "bold", color = "black"),
+                        strip.text.x = element_text(size =8, face = "bold", color = "white",angle = 0),
+                        strip.background = element_rect(fill = "black"),
+                        strip.placement = "outside",
+                        legend.position = "bottom"
+                        )
+      )
+      dev.off()
+}
+for(i in 1){
+      png(filename = "/home/siwakorn/scRNA.PB/Fig/221024/Vahar.DP2.PGE2production3.221030.png", width = 8, height = 4, units ="in", res= 400)
+      print(
+            ggplot(df2, aes(x = features.plot, y = id, color = avg.exp.scaled, size = pct.exp)) + geom_point() + 
+            scale_ByzantiumOrange+
+            theme_bw()+
+            facet_grid(.~Sample , scales = "free", space="free", switch = "y") +
+                  theme(axis.title = element_blank(), 
+                        axis.text.x = element_text(size =14, face = "bold",angle = 90,color = "black",vjust=0.5, hjust =1),
+                        axis.text.y = element_text(size =14, face = "bold", color = "black"),
+                        strip.text.x = element_text(size =8, face = "bold", color = "white",angle = 0),
+                        strip.background = element_rect(fill = "black"),
+                        strip.placement = "outside",
+                        legend.position = "bottom"
+                        )
+      )
+      dev.off()
+}
+
+
+Vahar = readRDS( file = "//home/siwakorn/scRNA.PB/Vaharautio.2022/RDS/Vaharautio.Harmony.221024.rds")
+Idents(Vahar) = Vahar$sample
+DotPlot(Vahar, features = GeneSet$PGE2) + Dot_axis90 + Dot_scale+scale_ig
+
+
+for(i in unique(Vahar2$patient_id )){
+      #png(filename = paste0("/home/siwakorn/scRNA.PB/Fig/221024/Vahar.FP.PTGS1.",i,".png", width = 7, height = 7, units ="in", res= 400)
+      tmp = subset(Vahar2, patient_id == i )
+      print(FeaturePlot(tmp, features = "PTGS1") + scale_orange ) 
+      #dev.off()
+}
+Idents(Vahar2) = Vahar2$patient_id
+
+for(i in 1){
+      png(filename = "/home/siwakorn/scRNA.PB/Fig/221024/Vahar.VP.PTGS1.png", width = 14, height = 5, units ="in", res= 400)
+      print(VlnPlot(Vahar, features = "PTGS1") + NoLegend()+theme(axis.text.x = element_text(angle = 90)) )
+      dev.off()
+      png(filename = "/home/siwakorn/scRNA.PB/Fig/221024/Vahar.VP.PTGS2.png", width = 14, height = 5, units ="in", res= 400)
+      print(VlnPlot(Vahar, features = "PTGS2") + NoLegend()+theme(axis.text.x = element_text(angle = 90)) )
+      dev.off()
+}
+```
+
+
+#Ranking
+##PTGS1
+```{r}
+Idents(Vahar) = Vahar$sample
+tmp = AverageExpression(Vahar, features = "PTGS1")$RNA
+tmp = tmp %>% t() %>% as.data.frame() 
+colnames(tmp) = "PTGS1"
+tmp = arrange(tmp,desc(PTGS1))
+tmp$Rank.PTGS1 = paste0("PTGS1_",1:length(unique(Vahar$sample)))
+tmp$sample = rownames(tmp)
+tmp2
+tmp2 = left_join(as_tibble(Vahar[[]],rownames = "CB"), tmp, by = "sample" )
+Vahar[[]]
+tmp1 = tmp2$Rank.PTGS1
+names(tmp1) = tmp2$CB
+Vahar <- AddMetaData(Vahar, metadata = tmp1, col.name = "Rank.PTGS1")
+Vahar$Rank.PTGS1 = factor(Vahar$Rank.PTGS1,levels =  paste0("PTGS1_",1:22) )
+```
+##PTGS2
+```{r}
+Idents(Vahar) = Vahar$sample
+tmp = AverageExpression(Vahar, features = "PTGS2")$RNA
+tmp = tmp %>% t() %>% as.data.frame() 
+colnames(tmp) = "PTGS2"
+tmp = arrange(tmp,desc(PTGS2))
+tmp$Rank.PTGS2 = paste0("PTGS2_",1:22)
+tmp$sample = rownames(tmp)
+tmp
+tmp2 = left_join(as_tibble(Vahar[[]],rownames = "CB"), tmp, by = "sample" )
+tmp1 = tmp2$Rank.PTGS2
+names(tmp1) = tmp2$CB
+Vahar <- AddMetaData(Vahar, metadata = tmp1, col.name = "Rank.PTGS2")
+Vahar$Rank.PTGS2 = factor(Vahar$Rank.PTGS2,levels =  paste0("PTGS2_",1:22) )
+```
+
+##PTGS
+```{r}
+Idents(Vahar) = Vahar$sample
+tmp = AverageExpression(Vahar, features = c("PTGS1","PTGS2"))$RNA
+tmp = tmp %>% t() %>% as.data.frame() 
+tmp$PTGSv1 = tmp$PTGS1+tmp$PTGS2
+tmp$PTGS1 = scale(tmp$PTGS1)
+tmp$PTGS2 = scale(tmp$PTGS2)
+tmp$PTGSv2 = tmp$PTGS1+tmp$PTGS2
+tmp = arrange(tmp,desc(PTGSv1))
+tmp$Rank.PTGSv1 =  paste0("PTGSv1_",1:nrow(tmp))
+tmp = arrange(tmp,desc(PTGSv2))
+tmp$Rank.PTGSv2 =  paste0("PTGSv2_",1:nrow(tmp))
+tmp = tmp %>% as_tibble(rownames = "sample")
+tmp2 = left_join(as_tibble(Vahar[[]],rownames = "CB"), tmp, by = "sample" )
+
+tmp3 = tmp2$Rank.PTGSv1
+names(tmp3) = tmp2$CB
+Vahar <- AddMetaData(Vahar, metadata = tmp3, col.name = "Rank.PTGSv1")
+Vahar$Rank.PTGSv1 = factor(Vahar$Rank.PTGSv1, levels =  paste0("PTGSv1_",1:nrow(tmp)) )
+
+tmp3 = tmp2$Rank.PTGSv2
+names(tmp3) = tmp2$CB
+Vahar <- AddMetaData(Vahar, metadata = tmp3, col.name = "Rank.PTGSv2")
+Vahar$Rank.PTGSv2 = factor(Vahar$Rank.PTGSv2, levels =  paste0("PTGSv2_",1:nrow(tmp)) )
+
+Vahar[[]]
+```
+
+
+#CD8
+```{r}
+Idents(Vahar) = Vahar$Identity.primary
+CD3 = subset(Vahar, idents = "T-cells")
+CD3 = Clustering1(CD3)
+for(i in 1){
+      print(DimPlot(CD3,label=T))
+      print(FeaturePlot(CD3, features = "CD3E"))
+      print(FeaturePlot(CD3, features = "CD8A"))
+      print(FeaturePlot(CD3, features = "TCF7"))
+}
+CD8 = subset(CD3, idents = c(0,2,3,5,7,8,9,10,11,14,19))
+CD8 = Clustering1(CD8)
+for(i in 1){
+      print(DimPlot(CD8,label=T))
+      print(FeaturePlot(CD8, features = "CD3E"))
+      print(FeaturePlot(CD8, features = "CD8A"))
+      print(FeaturePlot(CD8, features = "TCF7"))
+}
+CD8 = subset(CD8, idents = c(0,1,2,3,4,5,7,8,9,11,13,14,15,17,18))
+
+
+saveRDS(CD8, file = "//home/siwakorn/scRNA.PB/Vaharautio.2022/RDS/Vaharautio.CD8.Harmony.221024.rds")
+```
+
+
+```{r}
+selected.genes =c("TCF7", "LEF1", "IL7R", "XCL1", "GPR183", "CCR7", "KLF2", "RASA3", "FAM65B", "CDC25B", "FGFBP2", "LYAR", "SLAMF6", "C100ORF54", "LINC00861", "RASGRP2", "P2RY8", "SH3BP5", "SLCO3A1", "PXN", "CD27", "S1PR1", "S1PR4","GZMB", "GZMA", "PRF1", "GNLY", "HAVCR2", "ENTPD1","CD69", "CCL3", "ITGA1", "HLA-DRB5", "HLA-DQA2", "HLA-DQA1", "PMCH", "PHLDA1","RDH10", "CEBPD", "C4ORF26", "TESC", "CD86", "LAG3", "TIGIT", "PDCD1", "CTLA4", "CD69", "TOX", "BATF", "ITGAE") %>% intersect(rownames(CD8))
+
+
+Idents(CD8) = CD8$Rank.PTGS1
+tmp = DotPlot(CD8,features = selected.genes)$data
+Idents(CD8) = CD8$Rank.PTGS2
+tmp2 = DotPlot(CD8,features = selected.genes)$data
+CD8$sample %>% unique()
+```
+
+```{r,fig.width=16}
+ggplot(tmp, aes(x = features.plot, y = id) )+
+      geom_tile(color = "white", aes(fill = avg.exp.scaled) )+
+      theme_classic()+
+      Dot_axis90+
+      scale_fill_gradientn(colours = Col.HiLow.9Shades, 
+                                        #values = c(0, 0.35, 0.5, 0.65, 1), 
+                                          values = rescale(c(min(tmp$avg.exp.scaled),0,max(tmp$avg.exp.scaled)) ))+
+                  theme(axis.title = element_blank(), 
+                        axis.text.x = element_text(size =14, face = "bold"),
+                        axis.text.y = element_text(size =14, face = "bold", color = "black"),
+                        strip.text.y.left = element_text(size =18, face = "bold", color = "white",angle = 0),
+                        strip.background = element_rect(fill = "black"),
+                        strip.placement = "outside",
+                        legend.position = "bottom"
+                        )
+
+
+ggplot(tmp2, aes(x = features.plot, y = id) )+
+      geom_tile(color = "white", aes(fill = avg.exp.scaled) )+
+      theme_classic()+
+      Dot_axis90+
+      scale_fill_gradientn(colours = Col.HiLow.9Shades, 
+                                        #values = c(0, 0.35, 0.5, 0.65, 1), 
+                                          values = rescale(c(min(tmp$avg.exp.scaled),0,max(tmp$avg.exp.scaled)) ))+
+                  theme(axis.title = element_blank(), 
+                        axis.text.x = element_text(size =14, face = "bold"),
+                        axis.text.y = element_text(size =14, face = "bold", color = "black"),
+                        strip.text.y.left = element_text(size =18, face = "bold", color = "white",angle = 0),
+                        strip.background = element_rect(fill = "black"),
+                        strip.placement = "outside",
+                        legend.position = "bottom"
+                        )
+```
+
+
+```{r,fig.width=16}

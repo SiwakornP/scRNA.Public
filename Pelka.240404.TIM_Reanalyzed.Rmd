@@ -1,0 +1,1064 @@
+---
+title: "Pelka CRC scRNA"
+author: "Siwakorn"
+date: '2024-01-04'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+#Library
+```{r}
+library(Seurat)
+library(tidyverse)
+library(harmony)
+library(scales)
+#library(pathfindR)
+library(fgsea)
+library(msigdbr)
+library(biomaRt)
+library(ggrepel)
+library(ggthemes)
+library(gtools)
+library(DESeq2)
+library("org.Mm.eg.db")
+library(limma)
+library(extrafont)
+#font_import()
+```
+
+```{r}
+dir = "~/Library/CloudStorage/OneDrive-Personal/Documents_Onedrive/RStudioProject/scRNA.Public/Pelka/Fig/240404/"
+dir = "C:/Users/zirko/OneDrive/Documents_Onedrive/RStudioProject/scRNA.Public/Pelka/Fig/240402/"
+dir.create(dir)
+PNG <- function(x,w = 6, h = 6.3, r =400){
+      png(filename = paste0(dir,"/",x,".png" ),
+          width = w, 
+          height = h, 
+          units = "in", 
+          res = r)
+}
+
+PDF <- function(x,w = 6, h = 6.3,r=400){
+      pdf(file = paste0(dir,"/",x,".pdf" ),
+          width = w, 
+          height = h)
+}
+
+Dot_axis90A = theme(axis.text.x =  element_text(size = 15, angle = 90, hjust = 1, vjust = 0.3,color = "black",face ="italic"), axis.text.y = element_text(size = 15,color = "black")) 
+Dot_axis90B = theme(axis.text.x =  element_text(size = 15, angle = 90, hjust = 1, vjust = 0.3,color = "black"), axis.text.y = element_text(size = 15,color = "black")) 
+Dot_scale = scale_size(range = c(1.5,8),name = "Percent Expression") 
+Dot_scale2 = scale_size(range = c(0.1,1),name = "Percent Expression") 
+Col.HiLow.9Shades = c("#28198a","#163285","#3d569f","#8b99c2","#ffffff","#fce487","#f9c80e","#f86624","#ea3546")
+scale_ig = scale_color_gradientn(colours = c("grey","#120078","#9d0191","#fd3a69","#fecd1a"), values = c(0,0.1,0.3,0.6,1))
+scale_orange = scale_color_gradientn(colours = c("grey","yellow","orange","red"), values = c(0,0.1,0.5,1))
+
+col_pastel_rainbow = c("#01295f","#437f97","#849324","#ffb30f","#fd151b","firebrick")
+
+scale_PRainbow = scale_color_gradientn(colours = col_pastel_rainbow)
+scale_BY = scale_color_gradientn(colours = c("grey","#01295f","#1c51be","#1893c4","#52b893","#9c944c","#e5cd3b","#fecd1a","orange"), values = c(0,0.05,0.1,0.3,0.4,0.5,0.6,0.8,1) )
+scale_BY2 = scale_color_manual(values=  c("grey","#01295f","#1c51be","#1893c4","#52b893","#9c944c","#e5cd3b","#fecd1a","orange","#f86624","firebrick") )
+
+```
+
+
+#GeneSet
+```{r}
+Ref <- readRDS("~/Library/CloudStorage/OneDrive-Personal/Documents_Onedrive/RStudioProject/scRNA/Ref/Ref_Mouse-Human.230828.rds")
+HGenes = Ref$hmart$hgnc_symbol %>% mixedsort()
+
+fgsea_sets_H  <- msigdbr(species = "human", category = "H" ) %>% split(x = .$gene_symbol, f = .$gs_name)
+fgsea_sets_c2 <- msigdbr(species = "human", category = "C2" ) %>% split(x = .$gene_symbol, f = .$gs_name)
+fgsea_sets_c5 <- msigdbr(species = "human", category = "C5" ) %>% split(x = .$gene_symbol, f = .$gs_name)
+fgsea_sets = append(fgsea_sets_H, fgsea_sets_c2)
+
+
+GeneSet$DE$ETC = list(
+  "Complex I" = find2(HGenes, "^NDUF"),
+  "Complex II" = find2(HGenes, "^SDH"),
+  "Complex III" = c(find2(HGenes, "^UQC"),find2(HGenes,"^CYC")),
+  "Complex IV" = find2(HGenes,"^COX"),
+  "Complex V" = find2(HGenes, "^ATP")
+)
+
+GeneSet$DE$ETC.Ref = list(
+  "Complex I" = fgsea_sets$WP_MITOCHONDRIAL_COMPLEX_I_ASSEMBLY_MODEL_OXPHOS_SYSTEM,
+  "Complex II" = fgsea_sets$WP_MITOCHONDRIAL_COMPLEX_II_ASSEMBLY,
+  "Complex III" = fgsea_sets$WP_MITOCHONDRIAL_COMPLEX_III_ASSEMBLY,
+  "Complex IV" = fgsea_sets$WP_MITOCHONDRIAL_COMPLEX_IV_ASSEMBLY,
+  "Complex V" = fgsea_sets_c5$GOCC_PROTON_TRANSPORTING_ATP_SYNTHASE_COMPLEX
+)
+GeneSet$DE$ETC.Ref2 = list(
+  "Complex I" = intersect(GeneSet$DE$ETC$`Complex I`, fgsea_sets$WP_MITOCHONDRIAL_COMPLEX_I_ASSEMBLY_MODEL_OXPHOS_SYSTEM),
+  "Complex II" = intersect(GeneSet$DE$ETC$`Complex II` ,fgsea_sets$WP_MITOCHONDRIAL_COMPLEX_II_ASSEMBLY),
+  "Complex III" = intersect(GeneSet$DE$ETC$`Complex III`, fgsea_sets$WP_MITOCHONDRIAL_COMPLEX_III_ASSEMBLY),
+  "Complex IV" = intersect(GeneSet$DE$ETC$`Complex IV`, fgsea_sets$WP_MITOCHONDRIAL_COMPLEX_IV_ASSEMBLY),
+  "Complex V" = intersect(GeneSet$DE$ETC$`Complex V`  ,fgsea_sets_c5$GOCC_PROTON_TRANSPORTING_ATP_SYNTHASE_COMPLEX)
+)
+GeneSet$DE$ETC.Ribosome = c(GeneSet$DE$ETC.Ref2,GeneSet$DE$Ribosome)
+
+
+GeneSet$DE$ETC.selected.set = list(
+  "Complex I" = c("NDUFA5","NDUFA6","NDUFA7","NDUFA8","NDUFB5","NDUFB6", "NDUFB8", "NDUFB9" ,"NDUFB10","NDUFB11","NDUFS5","NDUFV2" , "NDUFV3"),
+  "Complex II" = c("SDHAF1","SDHAF2"),
+  "Complex IV" = c("COX4I1","COX5A", "COX5B" , "COX6B1" ),
+  "Complex V" = c("ATP5F1C", "ATP5F1D", "ATP5F1EP2" ,"ATP5MC1","ATP5MC2" ,"ATP5PD","ATP5PF","ATP5MF","ATP5ME" ,"ATP5IF1", "ATP6V1F","ATP6V1G1" )
+)
+
+GeneSet$DE$ETC.selected = c("NDUFA5","NDUFA6","NDUFA7","NDUFA8","NDUFB5","NDUFB6", "NDUFB8", "NDUFB9" ,"NDUFB10","NDUFB11","NDUFS5","NDUFV2" , "NDUFV3" ,"COX4I1","COX5A", "COX5B" , "COX6B1", "ATP5F1C", "ATP5F1D", "ATP5F1EP2" ,"ATP5MC1","ATP5MC2" ,"ATP5PD","ATP5PF","ATP5MF","ATP5ME" ,"ATP5IF1", "ATP6V1F","ATP6V1G1" )
+
+GeneSet$DE$ETC.selected2 = c("NDUFA6","NDUFA7","NDUFB5","SDHAF1","SDHAF2","COX5A","COX5B","COX6A1","ATP5FA1","ATP5F1C","ATP5MF" )
+
+
+GeneSet$DE$Ribosome = list(
+  "RP large subunit" = find2(HGenes, "^RPL"),
+  "RP small subunit" = find2(HGenes, "^RPS")
+)
+
+GeneSet$DE$ISG = list("ISG"= find2(HGenes,"ISG"),
+                      "IFI" = find2(HGenes,"IFI") )
+
+GeneSet$DE$LLC = c("IL1B","IL1A","HIF1A","PTGS1","PTGS2","VEGFA")
+
+GeneSet$DE$Common <- c("FOS","FOSB","FOSL2","JUN","JUNB","JUND","ATF3","EGR1","ETS1","NR3C1","ATF7IP","ACTB","ACTG1","ACTR2","CCL3","CCL4","CCL3L1","CCL4L2","CCL5","CXCL13","CXCR4","XCL1","XCL2","HMGA1","HMGB1","HMGB2","HMGN1","HMGN3","NR4A1","NR4A2","NR4A3","NFKBIZ","NFKB1","PSMA1","PSMA2","PSMA3","PSMA4","PSMA5","PSMA6","PSMA7","PSMB1","PSMB2","PSMB3","PSMB4","PSMB5","PSMB6","PSMB7","PSMB8","PSMB9","PSMC1","PSMC2","PSMC3", "PSMD7","PSMD8","PSMD9","PSME1","PSME2","PSME3" )
+GeneSet$DE$Chemokine = c(HGenes[grep("^CCL",HGenes)],
+                                    HGenes[grep("^CXC",HGenes)],
+                                    HGenes[grep("^XCL",HGenes)]
+                                    ) %>% sort()
+GeneSet$DE$Glycolysis = c("HK1","ENO1","LDHA","PGAM1","PFKP","PKM","TPI1")
+GeneSet$DE$Glycolysis2 = c(GeneSet$DE$Glycolysis, fgsea_sets$WP_AEROBIC_GLYCOLYSIS, fgsea_sets$MOOTHA_GLYCOLYSIS, fgsea_sets$REACTOME_GLYCOLYSIS) %>% unique() %>% sort()
+
+
+GeneSet$DE$CD8.Overview = list(
+  "Activation" = c("CD44","CD69","FOS","FOSB","JUN","JUNB","JUND","NFATC1","IFNG"),
+  "TCR" = c("CD3D","CD3G","CD27","CD28"),
+  "NFKB" = c("NFKB1","NFKBIZ","NR4A1","NR4A2","NR4A3","RELB"), 
+  "IL2-signaling" = c("IL2RA","IL2RB","IL2RG","STAT5A","STAT5B"),
+  "ETC" = c(GeneSet$DE$MTC1[1:3],GeneSet$DE$MTC23[1:3],GeneSet$DE$MTC4[1:3],GeneSet$DE$MTC5[49:52]), 
+  "Ribosome" = GeneSet$DE$Ribosome[1:6], 
+  "Proteosome" = GeneSet$DE$Proteosome[11:15],
+  "-" = c("IFNG","TGFB1","HLA-DRA","HLA-DRB1","DNMT1","JARID1B","CTNNB1") )
+
+GeneSet$DE$CD8.Overview2 = list(
+  "Activation" = c("CD44","CD69","FOS","FOSB","JUN","JUNB","JUND","NFATC1","IFNG"),
+  "NFKB" = c("NFKB1","NFKBIZ","NR4A1","NR4A2","NR4A3","RELB"), 
+  "TCR" = c("CD3D","CD3G","CD27","CD28"),
+  "IL2-signaling" = c("IL2RA","IL2RB","IL2RG","STAT5A","STAT5B"),
+  "OXPHOS" = GeneSet$DE$ETC.selected2,
+  "Ribosome" = c("RPS2","RPS3","RPS11","RPL3","RPL11","RPL19") )
+
+GeneSet$DE$TIM.Overview = list(
+  "AP-1" = c("FOS","FOSB","FOSL1","FOSL2","JUN","JUNB","JUND"),
+  "NFKB" = c("NFKB1","NKFB2","NFKBIZ","NR4A1","NR4A2","NR4A3","RELB","RELA"), 
+  "ETC" = c(GeneSet$DE$MTC1[1:3],GeneSet$DE$MTC23[1:3],"UQCC2","UQCC3",GeneSet$DE$MTC4[13:16],GeneSet$DE$MTC5[49:52]), 
+  "Ribosome" = GeneSet$DE$Ribosome[3:8], 
+  "Proteosome" = GeneSet$DE$Proteosome[11:15])
+
+GeneSet$DE$TIM.Overview2 = list(
+  "AP-1" = c("FOS","FOSB","FOSL1","FOSL2","JUN","JUNB","JUND"),
+  "NFKB" = c("NFKB1","NKFB2","NFKBIZ","NR4A1","NR4A2","NR4A3","RELB","RELA"), 
+  "ETC" = GeneSet$DE$ETC.selected2,
+  "Ribosome" = c("RPS2","RPS3","RPS11","RPL3","RPL11","RPL19") )
+
+GeneSet$DE$Bonavita = list(
+  "Promoting" = c("PTGS2","IL6","CXCL1","CXCL2","CSF3","IL1A","IL1B","CCL2","VEGFA"),
+  "Inhibiting" = c("IL12A","IL12B","CXCL9","CXCL10","CCL5","STAT1")
+)
+
+GeneSet$DE$PGE2 = c("PTGS1","PTGS2","PTGER2","PTGER4","PTGES","PTGES2","PTGES3")
+```
+
+#------------------------------
+#Load
+```{r}
+library(rhdf5)
+h5ls("~/Downloads/GSE178341_crc10x_full_c295v4_submit.h5")
+h5f = H5Fopen("~/Downloads/GSE178341_crc10x_full_c295v4_submit_1.h5")
+H5Fclose(h5f)
+
+Pelka = Read10X_h5("~/Library/CloudStorage/OneDrive-Personal/Documents_Onedrive/RStudioProject/scRNA.Public/Pelka/GSE178341_crc10x_full_c295v4_submit.h5")
+Pelka = CreateSeuratObject(counts = Pelka, min.cells = 3, min.features = 0)
+meta <- read.csv("~/Library/CloudStorage/OneDrive-Personal/Documents_Onedrive/RStudioProject/scRNA.Public/Pelka/GSE178341_crc10x_full_c295v4_submit_metatables.csv.gz")
+cls <- read.csv("~/Library/CloudStorage/OneDrive-Personal/Documents_Onedrive/RStudioProject/scRNA.Public/Pelka/GSE178341_crc10x_full_c295v4_submit_cluster.csv.gz")
+colnames(cls)[1] = "cellID"
+tmp = left_join(meta,cls, by = "cellID")
+rownames(tmp) = tmp$cellID
+Pelka = AddMetaData(Pelka, metadata = tmp)
+Pelka[["percent.mt"]] <- PercentageFeatureSet(Pelka, pattern = "^MT-")
+```
+#Initialization
+```{r}
+saveRDS(Pelka,"~/Library/CloudStorage/OneDrive-Personal/Documents_Onedrive/RStudioProject/scRNA.Public/Pelka/Pelka.240105.rds" )
+Pelka = subset(Pelka, percent.mt < 10)
+Pelka = NormalizeData(Pelka) %>% FindVariableFeatures() %>% ScaleData() %>% RunPCA(verbose = FALSE)
+Pelka = RunHarmony(Pelka, group.by.vars = "PatientTypeID")
+Pelka <- RunUMAP(Pelka, reduction = "harmony", dims = 1:30, min.dist = 1, spread =1 )
+Pelka <- FindNeighbors(Pelka, reduction = "harmony", dims = 1:30) %>% FindClusters(resolution = 0.3)
+saveRDS(Pelka,"~/Library/CloudStorage/OneDrive-Personal/Documents_Onedrive/RStudioProject/scRNA.Public/Pelka/Pelka.QC10.240105.rds" )
+```
+
+#Classification
+```{r}
+Pelka = readRDS("~/Library/CloudStorage/OneDrive-Personal/Documents_Onedrive/RStudioProject/scRNA.Public/Pelka/Pelka.QC10.240105.rds" )
+Idents(Pelka) = Pelka$clMidwayPr
+Pelka = RenameIdents(Pelka,
+                     "NK" = "NK",
+                     "TCD8" = "CD8 T cell",
+                     "TCD4" = "CD4 T cell",
+                     "Tgd" = "GammaDelta T cell",
+                     "ILC" = "ILC",
+                     "TZBTB16" = "ZBTB16+ T cell" ,
+                     "Macro" = "Macrophage",
+                     "Mono" = "Monocytes",
+                     "Granulo" = "Granulocyte"  ,
+                     "DC" = "DC",
+                    "B" = "B cell",
+                     "Plasma" = "Plasma cell",
+                     "Mast" = "Mast cell",
+                     "Epi" = "Epithelial",
+                     "Fibro" = "Fibroblast",
+                     "Peri" = "Pericyte",
+                     "Endo" = "Endothelial",
+                     "SmoothMuscle" = "Smooth muscle",
+                     "Schwann" = "Schwann" 
+                          )
+Pelka$Identity.Celltype1 = Idents(Pelka)
+
+Idents(Pelka) = Pelka$clMidwayPr
+Pelka = RenameIdents(Pelka,
+                     "NK" = "NK",
+                     "TCD8" = "CD8 T cell",
+                     "TCD4" = "CD4 T cell",
+                     "Tgd" = "GammaDelta T cell",
+                     "ILC" = "ILC",
+                     "TZBTB16" = "ZBTB16+ T cell" ,
+                     "Macro" = "TIM",
+                     "Mono" = "TIM",
+                     "Granulo" = "TIM"  ,
+                     "DC" = "DC",
+                     "B" = "B cell",
+                     "Plasma" = "Plasma cell",
+                     "Mast" = "Mast cell",
+                     "Epi" = "Epithelial",
+                     "Fibro" = "Fibroblast",
+                     "Peri" = "Pericyte",
+                     "Endo" = "Endothelial",
+                     "SmoothMuscle" = "Smooth muscle",
+                     "Schwann" = "Schwann" 
+                          )
+Pelka$Identity.Celltype2 = Idents(Pelka)
+```
+##Myeloid
+```{r}
+DimPlot(Pelka,raster = F,label =T) + NoLegend()
+Idents(Pelka) = Pelka$clTopLevel
+
+Myeloid = subset(Pelka, idents = "Myeloid")
+Myeloid = Clustering1(Myeloid,group = "PatientTypeID")
+Idents(Myeloid) = Myeloid$seurat_clusters
+
+DotPlot(TIM, features = c("CSF1R","CSF3R","S100A8","S100A9","ADGRE1",
+                            "C1QA","C1QB","AXL","MERTK","MRC1","PTGS2","PTGER2","VCAN","IL1B","PTGS1","PTGER4","VEGFA",
+                            "SPP1","ISG15","IFIT1","MKI67",
+                            "HLA-DRA","HLA-DRB1","HLA-DMA","HLA-DPA1","HLA-DPB1",
+                            "CLEC9A","XCR1","LAMP3","CCR7","CD274","TNFSF9","TNFSF18",
+                            "CD1C","CD1E","CD1A","HLA-DQA1","HLA-DQA2","HLA-DQB2","CD207","FCER1A",
+                            "LILRA4","IRF7","IRF8","CLEC4C",
+                            "IGKC","IGLC3","MALAT1","MT-CO1") )+
+  Dot_axis90A + 
+  theme(axis.text.x = element_text(size = 5),
+        axis.text.y = element_text(size = 5)) + Dot_scale2
+
+Myeloid = RenameIdents(Myeloid, 
+      '0' = "TIM",
+      '1' = "TIM",
+      '2' = "TIM",
+      '3' = "TIM",
+      '4' = "TIM",
+      '5' = "TIM",
+      '6' = "TIM",
+      '7' = "TIM",
+      '11' = "TIM",
+      '12' = "TIM",
+      '14' = "TIM",
+      '15' = "TIM",
+      '13' = "cDC1",
+      '8' = "cDC2",
+      '9' = "mregDC",
+      '10' = "pDC"
+      )
+Myeloid$Identity.Celltype3 = Idents(Myeloid)
+Myeloid$Identity.Celltype3B = Idents(Myeloid)
+DimPlot(Myeloid)
+
+```
+
+###TIM
+```{r,fig.width=6, fig.height=2}
+TIM = subset(Myeloid, idents = "TIM")
+TIM = Clustering1(TIM,group = "PatientTypeID")
+PelkaDF$AllMarkers = list()
+PelkaDF$AllMarkers$TIM = FindAllMarkers(TIM, max.cells.per.ident = 300)
+tmp1 %>% group_by(cluster) %>% top_n(n=30, wt =avg_log2FC)
+
+DotPlot(TIM, features = unique(c("CSF1R","CSF3R","S100A8","S100A9","ADGRE1",
+                            "C1QA","C1QB","AXL","MERTK","MRC1","PTGS2","PTGER2","VCAN","IL1B","PTGS1","PTGER4","VEGFA",
+                            "SPP1","ISG15","IFIT1","MKI67",
+                            "HLA-DRA","HLA-DRB1","HLA-DMA","HLA-DPA1","HLA-DPB1",
+                            "CLEC9A","XCR1","LAMP3","CCR7","CD274","TNFSF9","TNFSF18",
+                            "CD1C","CD1E","CD1A","HLA-DQA1","HLA-DQA2","HLA-DQB2","CD207","FCER1A",
+                            "LILRA4","IRF7","IRF8","CLEC4C",
+                            "IGKC","IGLC3","MALAT1","MT-CO1","CSF3R","ADGRG3","CXCL8","FCGR3B","CXCR4","VCAN","IL1A","IL1B","NLRP3","VEGFA","C1QA","C1QC","APOE","TREM2","AXL","MERTK","HLA-DRA","HLA-DRB5","HLA-DQB1","HLA-DMA","MKI67","STMN1","TOP2A","TUBA1B","HIST1H4C") ))+ 
+  scale_ig+
+  Dot_axis90A + 
+  theme(axis.text.x = element_text(size = 5),
+        axis.text.y = element_text(size = 5)) + Dot_scale2
+
+DimPlot(TIM, label=T)
+
+for(i in unique(c("CSF1R","CSF3R","S100A8","S100A9","ADGRE1",
+                            "C1QA","C1QB","AXL","MERTK","MRC1","PTGS2","PTGER2","VCAN","IL1B","PTGS1","PTGER4","VEGFA",
+                            "SPP1","ISG15","IFIT1","MKI67",
+                            "HLA-DRA","HLA-DRB1","HLA-DMA","HLA-DPA1","HLA-DPB1",
+                            "CLEC9A","XCR1","LAMP3","CCR7","CD274","TNFSF9","TNFSF18",
+                            "CD1C","CD1E","CD1A","HLA-DQA1","HLA-DQA2","HLA-DQB2","CD207","FCER1A",
+                            "LILRA4","IRF7","IRF8","CLEC4C",
+                            "IGKC","IGLC3","MALAT1","MT-CO1","CSF3R","ADGRG3","CXCL8","FCGR3B","CXCR4","VCAN","IL1A","IL1B","NLRP3","VEGFA","C1QA","C1QC","APOE","TREM2","AXL","MERTK","HLA-DRA","HLA-DRB5","HLA-DQB1","HLA-DMA","MKI67","STMN1","TOP2A","TUBA1B","HIST1H4C") )){
+  print(FeaturePlot(TIM, i) + scale_orange)
+}
+
+Idents(TIM) = TIM$seurat_clusters
+TIM = RenameIdents(TIM,       
+                     '1' = "TAN-PMN",
+                     '3' = "TIM_VCAN",
+                     '4' = "TIM_VCAN",
+                     '0' = "TIM_C1QA",
+                     '11' = "TIM_C1QA",
+                     '5' = "TIM_C1QA_Dividing",
+                     '8' = "TIM_ISG",
+                     '6' = "cDC2-TIM",
+                     '7' = "Doublet",
+                     '9' = "Doublet",
+                     '10' = "Doublet",
+                     '12' = "Doublet",
+                     '2' = "LQ"
+      )
+TIM$Identity.Celltype3 = Idents(TIM)
+Idents(TIM) = TIM$seurat_clusters
+TIM = RenameIdents(TIM,       
+                     '1' = "TAN-PMN",
+                     '3' = "TIM_VCAN",
+                     '4' = "TIM_VCAN",
+                     '0' = "TIM_C1QA",
+                     '11' = "TIM_C1QA",
+                     '5' = "TIM_C1QA_Dividing",
+                     '8' = "TIM_ISG",
+                     '6' = "cDC2-TIM",
+                     '7' = "Doublet_CD3",
+                     '9' = "Doublet_BP",
+                     '10' = "Doublet_BP",
+                     '12' = "Doublet_Epi",
+                     '2' = "LQ"
+      )
+TIM$Identity.Celltype3B = Idents(TIM)
+DimPlot(TIM)
+saveRDS(TIM,"~/Library/CloudStorage/OneDrive-Personal/Documents_Onedrive/RStudioProject/scRNA.Public/Pelka/Pelka_TIM.Celltype.240404.rds")
+```
+
+##Transfer Identity
+```{r}
+tmp1 = Pelka[[]] %>% dplyr::select(Identity.Celltype1,Identity.Celltype2) %>% as_tibble(rownames = "CB")
+tmp1$Identity.Celltype3 = tmp1$Identity.Celltype1
+tmp1$Identity.Celltype3B = tmp1$Identity.Celltype1
+
+tmp2 = Myeloid[[]] %>% dplyr::select(Identity.Celltype1,Identity.Celltype2,Identity.Celltype3,Identity.Celltype3B) %>% as_tibble(rownames = "CB") %>% filter(!Identity.Celltype3 == "TIM")
+
+tmp3 = TIM[[]] %>% dplyr::select(Identity.Celltype1,Identity.Celltype2,Identity.Celltype3,Identity.Celltype3B) %>% as_tibble(rownames = "CB")
+
+tmp1 = filter(tmp1, !CB %in% c(tmp2$CB,tmp3$CB ))
+tmp = rbind(tmp1,tmp2,tmp3)
+
+tmp1 = tmp$Identity.Celltype3
+names(tmp1) = tmp$CB
+Pelka = AddMetaData(Pelka,metadata = tmp1, col.name = "Identity.Celltype3")
+Pelka$Identity.Celltype3 =  factor(Pelka$Identity.Celltype3, levels = levels(Pelka$Identity.Celltype3)[c(1:6,25:29,21:24,11:19,30,31,32)] )
+summary(Pelka$Identity.Celltype3)
+
+tmp1 = tmp$Identity.Celltype3B
+names(tmp1) = tmp$CB
+Pelka = AddMetaData(Pelka,metadata = tmp1, col.name = "Identity.Celltype3B")
+Pelka$Identity.Celltype3B =  factor(Pelka$Identity.Celltype3B, levels = levels(Pelka$Identity.Celltype3B)[c(1:6,25:29,21:24,11:19,30:34)] )
+summary(Pelka$Identity.Celltype3B)
+
+Idents(Pelka)  = Pelka$Identity.Celltype3
+Pelka = RenameIdents(Pelka,
+                     "NK" = "NK",
+                     "CD8 T cell" = "CD8 T cell",
+                     "CD4 T cell" = "CD4 T cell",
+                     "GammaDelta T cell" = "GammaDelta T cell",
+                     "ILC" = "ILC",
+                     "ZBTB16+ T cell" = "ZBTB16+ T cell" ,
+                     "TAN-PMN" = "TIM",
+                     'TIM_VCAN' = "TIM",
+                     'TIM_C1QA' = "TIM",
+                     'TIM_C1QA_Dividing' = "TIM",
+                     'TIM_ISG' = "TIM",
+                     'cDC1' = "cDC1",
+                     'cDC2' = "cDC2",
+                     'mregDC' = "mregDC",
+                     'pDC' = "pDC",
+                     "B cell" = "B cell",
+                     "Plasma cell" = "Plasma cell",
+                     "Mast cell" = "Mast cell",
+                     "Epithelial" = "Epithelial",
+                     "Fibroblast" = "Fibroblast",
+                     "Pericyte" = "Pericyte",
+                     "Endothelial" = "Endothelial",
+                     "Smooth muscle" = "Smooth muscle",
+                     "Schwann" = "Schwann" 
+                          )
+Pelka$Identity.Celltype4 = Idents(Pelka)
+DimPlot(Pelka,raster = F, label=T) + NoLegend()
+saveRDS(Pelka,"~/Library/CloudStorage/OneDrive-Personal/Documents_Onedrive/RStudioProject/scRNA.Public/Pelka/Pelka.Celltype4.240404.rds" )
+```
+
+
+#DM
+```{r}
+Idents(Pelka) = Pelka$clTopLevel
+Pelka$clTopLevel = factor(Pelka$clTopLevel,c("TNKILC","Myeloid","B","Plasma","Mast","Epi","Strom"))
+
+for(i in 1){
+  PNG(paste0("Pelka.DM.TopLevel.",i), h = 5, w = 5,r=200)
+  print(DimPlot(Pelka,raster = F,label=T,cols = c("#252d6b","#d51f24","#1e8b40","#fcb900","#985c6f","#d996a7","#BF535B"))+ 
+          NoLegend())
+  dev.off()
+}
+
+for(i in 1){
+  PNG(paste0("Pelka.DM.TopLevel.Col2.",i), h = 5, w = 5,r=200)
+  print(DimPlot(Pelka,raster = F,label=T,cols = c("#437639","#CD2028","#2077B3","#9974B1","#D67AAF","#F3A522","#89572B"))+ 
+          NoLegend())
+  dev.off()
+}
+
+
+
+
+```
+
+```{r}
+#Total
+for(i in 1 ){
+  PNG(paste0("Pelka.DM"), h = 5, w = 7,r=200)
+  print(DimPlot(Pelka,label=T,repel=T) )
+  dev.off()
+}
+
+for(i in c("PTGER2","PTGER4","PTGS1","PTGS2","PTGER3","PTGER1")){
+  PNG(paste0("Pelka.FP.",i), h = 5, w = 5,r=200)
+  print(FeaturePlot(Pelka,raster = F, features = i ) + scale_orange+
+          NoLegend() )
+  dev.off()
+}
+
+for(i in c("CSF1R","CSF3R","C1QA","VCAN","CD8A","CD3D","CD4","GNLY","FOXP3")){
+  PNG(paste0("Pelka.FP.",i), h = 5, w = 5,r=200)
+  print(FeaturePlot(Pelka,raster = F, features = i ) + scale_orange+
+          NoLegend() )
+  dev.off()
+}
+
+#Normal
+Pelka1 = subset(Pelka, SPECIMEN_TYPE == "N")
+for(i in 1 ){
+  PNG(paste0("Pelka.Normal.DM"), h = 5, w = 7,r=200)
+  print(DimPlot(Pelka1,label=T,repel=T) )
+  dev.off()
+}
+for(i in c("PTGER2","PTGER4","PTGS1","PTGS2","PTGER3","PTGER1")){
+  PNG(paste0("Pelka.Normal.FP.",i), h = 5, w = 5,r=200)
+  print(FeaturePlot(Pelka1,raster = F, features = i ) + scale_orange+
+          NoLegend() )
+  dev.off()
+}
+
+
+Pelka2 = subset(Pelka, SPECIMEN_TYPE == "T")
+for(i in 1 ){
+  PNG(paste0("Pelka.Tumor.DM"), h = 5, w = 7,r=200)
+  print(DimPlot(Pelka2,label=T,repel=T) )
+  dev.off()
+}
+for(i in c("PTGER2","PTGER4","PTGS1","PTGS2","PTGER3","PTGER1")){
+  PNG(paste0("Pelka.Tumor.FP.",i), h = 5, w = 5,r=200)
+  print(FeaturePlot(Pelka2,raster = F, features = i ) + scale_orange+
+          NoLegend() )
+  dev.off()
+}
+
+tmp1 = table(Pelka1$Identity.Celltype2, Pelka1$PatientTypeID )
+tmp1 = apply(tmp1,1,function(x) x/colSums(tmp1)*100) %>% t() %>% as_tibble(rownames = "Cluster")# %>% gather(key = "ID", value = "Pct", -Cluster)
+write.csv(tmp1, "C:/Users/zirko/OneDrive/Documents_Onedrive/RStudioProject/scRNA.Public/Pelka/Fig/240310/Pelka.Normal.PCT.csv")
+
+tmp1 = table(Pelka2$Identity.Celltype2, Pelka2$PatientTypeID )
+tmp1 = apply(tmp1,1,function(x) x/colSums(tmp1)*100) %>% t() %>% as_tibble(rownames = "Cluster")# %>% gather(key = "ID", value = "Pct", -Cluster)
+write.csv(tmp1, "C:/Users/zirko/OneDrive/Documents_Onedrive/RStudioProject/scRNA.Public/Pelka/Fig/240310/Pelka.Tumor.PCT.csv")
+
+tmp1
+```
+
+
+```{r}
+Idents(Pelka) = Pelka$Identity.Celltype
+DimPlot(Pelka)
+DotPlot(Pelka, features = c("PTGS1","PTGS2","PTGER1","PTGER2","PTGER3","PTGER4")) + Dot_axis90A + Dot_scale + scale_ig #+ coord_flip()
+
+Pelka$SPECIMEN_TYPE2 = "Tumor"
+Pelka$SPECIMEN_TYPE2[grep("N",Pelka$SPECIMEN_TYPE)]= "Normal"
+
+
+Epi = subset(Pelka, idents = "Epithelial")
+Idents(Epi) = Epi$PatientTypeID
+DotPlot(Epi, features = c("PTGS1","PTGS2","PTGER1","PTGER2","PTGER3","PTGER4")) + Dot_axis90+Dot_scale+scale_ig + coord_flip()
+Epi$SPECIMEN_TYPE %>% unique()
+
+Epi$SPECIMEN_TYPE2 = "Tumor"
+Epi$SPECIMEN_TYPE2[grep("N",Epi$SPECIMEN_TYPE)]= "Normal"
+
+Idents(Epi) = paste0(Epi$SPECIMEN_TYPE2,"_", Epi$MMRStatus,"_",Epi$PatientTypeID)
+
+Idents(Epi) = factor(Idents(Epi) , levels = sort(as.character(unique(Idents(Epi)))) )
+DotPlot(Epi, features = c("PTGS1","PTGS2","PTGER1","PTGER2","PTGER3","PTGER4")) + Dot_axis90+Dot_scale+scale_ig + coord_flip() + theme(legend.position = "bottom")
+VlnPlot(Epi, "PTGS1") + NoLegend()
+
+
+TIM = subset(Pelka, idents = c("Monocytes","Macrophage"))
+Idents(TIM) = paste0(TIM$SPECIMEN_TYPE2,"_", TIM$MMRStatus,"_",TIM$PatientTypeID)
+Idents(TIM) = factor(Idents(TIM) , levels = sort(as.character(unique(Idents(TIM)))) )
+DotPlot(TIM, features = c("PTGS1","PTGS2","PTGER1","PTGER2","PTGER3","PTGER4")) + Dot_axis90+Dot_scale+scale_ig + coord_flip() + theme(legend.position = "bottom")
+VlnPlot(TIM, "PTGS2") + NoLegend() + Dot_axis90
+```
+
+
+```{r}
+TNK = subset(Pelka, idents = "TNKILC")
+TNK = Clustering1(TNK,group = "PatientTypeID")
+TNK$clMidwayPr = factor(TNK$clMidwayPr, levels = c("NK","TCD4","TCD8","Tgd","ILC","TZBTB16"))
+Idents(TNK) = TNK$clMidwayPr
+saveRDS(TNK,"~/Library/CloudStorage/OneDrive-Personal/Documents_Onedrive/RStudioProject/scRNA.Public/Pelka/Pelka_TNK.240105.rds" )
+
+
+for(i in 1){
+  PNG(paste0("Pelka_TNK.DM.TopLevel.",i), h = 5, w = 5,r=200)
+  print(
+    DimPlot(TNK,raster = F,label=T,cols = c("#FE7F0F","#2E9F2B","#D52728","#8C564C","#2077B3","#9367BC")) #+ NoLegend()
+          )
+  dev.off()
+}
+for(i in c("CD3E","CD4","CD8A","NCR1","PRF1","FOXP3","MKI67")){
+  PNG(paste0("Pelka_TNK.FP.",i), h = 5, w = 5,r=200)
+  print(FeaturePlot(TNK,raster = F, features = i ) + scale_orange+
+          NoLegend() )
+  dev.off()
+}
+
+TIM = subset(Pelka, idents = "Myeloid")
+TIM = Clustering1(TIM,group = "PatientTypeID")
+TIM$clMidwayPr = factor(TIM$clMidwayPr, levels = c("Mono","Macro","DC","Granulo"))
+Idents(TIM) = TIM$clMidwayPr
+saveRDS(TIM,"~/Library/CloudStorage/OneDrive-Personal/Documents_Onedrive/RStudioProject/scRNA.Public/Pelka/Pelka_TIM.240105.rds" )
+
+for(i in 1){
+  PNG(paste0("Pelka_TIM.DM.",i), h = 5, w = 5,r=200)
+  print(
+    DimPlot(TIM, cols = c("#437639","#d51f24","#252d6b","#fcb900"))  + NoLegend()
+          )
+  dev.off()
+}
+for(i in c("CSF1R","CSF3R","C1QA","SPP1","S100A8","CLEC9A","LAMP3","CLEC10A")){
+  PNG(paste0("Pelka_TIM.FP.",i), h = 5, w = 5,r=200)
+  print(FeaturePlot(TIM,raster = F, features = i ) + scale_orange+
+          NoLegend() )
+  dev.off()
+}
+
+```
+
+
+#PTGER4 Group
+```{r}
+saveRDS(Pelka,"~/Library/CloudStorage/OneDrive-Personal/Documents_Onedrive/RStudioProject/scRNA.Public/Pelka/Pelka.Celltype4.240404.rds" )
+
+Idents(Pelka) = Pelka$Identity.Celltype2
+tmp = PTGER4.Group(Pelka,Identity = "Identity.Celltype2", Batch = "PatientTypeID" )
+Pelka = AddMetaData(Pelka,tmp,"PTGER4.Group.Celltype2")
+Pelka$PTGER4.Group.Celltype2 = factor(Pelka$PTGER4.Group.Celltype2, levels = c("Undetected","Low","Intermediate","High"))
+
+
+Idents(Pelka) = Pelka$Identity.Celltype3
+tmp = PTGER4.Group(Pelka,Identity = "Identity.Celltype3", Batch = "PatientTypeID" )
+Pelka = AddMetaData(Pelka,tmp,"PTGER4.Group.Celltype3")
+Pelka$PTGER4.Group.Celltype3 = factor(Pelka$PTGER4.Group.Celltype3, levels = c("Undetected","Low","Intermediate","High"))
+
+Idents(Pelka) = Pelka$Identity.Celltype4
+tmp = PTGER4.Group(Pelka,Identity = "Identity.Celltype4", Batch = "PatientTypeID" )
+Pelka = AddMetaData(Pelka,tmp,"PTGER4.Group.Celltype4")
+Pelka$PTGER4.Group.Celltype4 = factor(Pelka$PTGER4.Group.Celltype4, levels = c("Undetected","Low","Intermediate","High"))
+
+saveRDS(Pelka,"~/Library/CloudStorage/OneDrive-Personal/Documents_Onedrive/RStudioProject/scRNA.Public/Pelka/Pelka.PTGER4Group.240404.rds" )
+
+
+Pelka = readRDS("~/Library/CloudStorage/OneDrive-Personal/Documents_Onedrive/RStudioProject/scRNA.Public/Pelka/Pelka.PTGER4Group.240404.rds" )
+```
+
+
+```{r}
+TIM = subset(Pelka, Identity.Celltype4 == "TIM" ) %>% subset(SPECIMEN_TYPE == "T")
+table(TIM$PatientTypeID, TIM$PTGER4.Group.Celltype4)
+
+tmp2 = subset(TIM, PatientTypeID == "C107_T")
+Idents(tmp2) = tmp2$PTGER4.Group.Celltype4
+VlnPlot(tmp2, "PTGER4")
+
+```
+
+
+
+#DE (Celltype4)
+##All Cluster x Selected genes
+```{r}
+selected.genes = unique(sort(as.character(unlist(GeneSet)))) %>% intersect(rownames(Pelka))
+FullDE <- function(Obj,Group = "PTGER4.Group.Celltype2", Batch = "ID",Genes = selected.genes,A = "High", B = "Low"){
+      DE = list()
+      Idents(Obj) = Batch
+      for(i in unique(Obj[[]][,Batch]) ){
+            tmp = subset(Obj, idents = i)
+            print(paste0(i," : ", ncol(tmp), " Cells"))
+            tryCatch({
+                  Idents(tmp) = Group
+                  DE[[i]] = FindMarkers(tmp,features = selected.genes, ident.1 = A, ident.2 = B, logfc.threshold = 0,min.pct =0.01 )
+            }, error = function(e){print(e)})
+      }
+      
+      return(DE)
+}
+
+DE = list()
+Idents(Pelka) = Pelka$Identity.Celltype4
+for(i in levels( Idents(Pelka)  ) ){
+      print(i)
+      tmp = subset(Pelka, idents = i)
+      DE[[i]] = FullDE(tmp,Group = "PTGER4.Group.Celltype4", Batch = "PatientTypeID",Genes = selected.genes )
+}
+
+df = data.frame()
+for(i in names(DE)){
+  tmp = names(DE[[i]]) 
+  for(j in tmp ){
+      df1 = DE[[i]][[j]] %>% as_tibble(rownames = "Genes")
+      df1$Cluster = i
+      df1$Dataset = j
+      df = rbind(df,df1)
+      }
+}
+df$Type = "Normal"
+df$Type[grep("_T",df$Dataset)] = "Tumor"
+
+DE$df = df
+
+
+tmp1 = Pelka[[]] %>% dplyr::select(orig.ident,PatientTypeID,Sex,SPECIMEN_TYPE,MMRStatus) %>% as_tibble() 
+tmp1 = tmp1[!duplicated(tmp1$PatientTypeID),] %>% as.data.frame()
+rownames(tmp1) = tmp1$PatientTypeID
+df$Sex = tmp1[df$Dataset,"Sex"]
+df$MMRStatus = tmp1[df$Dataset,"MMRStatus"]
+
+df2 = data.frame()
+for(i in  df$Cluster %>% unique() ){
+  tmp = subset(Pelka, Identity.Celltype4 == i )
+  tmp2 = table(tmp$PatientTypeID,tmp$PTGER4.Group.Celltype4)
+  tmp2 = tmp2 %>% as.data.frame() %>% filter(Var2 == "High") %>% dplyr::select(Var1,Freq)
+  tmp2$Cluster = i
+  df2 = rbind(df2,tmp2)
+  
+}
+colnames(df2)[1:2] = c("Dataset","Frequency")
+df = left_join(df,df2) # by = c("Dataset, Cluster") )
+
+DE$df = df
+saveRDS(DE,"~/Library/CloudStorage/OneDrive-Personal/Documents_Onedrive/RStudioProject/scRNA.Public/Pelka/DE.SelectedGenes.Pelka.PTGER4.Group.Celltype4.240404.rds" )
+```
+
+##All Cluster x All Genes
+```{r}
+selected.genes = rownames(Pelka)
+FullDE <- function(Obj,Group = "PTGER4.Group.Celltype2", Batch = "ID",Genes = selected.genes,A = "High", B = "Low"){
+      DE = list()
+      Idents(Obj) = Batch
+      for(i in unique(Obj[[]][,Batch]) ){
+            tmp = subset(Obj, idents = i)
+            print(paste0(i," : ", ncol(tmp), " Cells"))
+            tryCatch({
+                  Idents(tmp) = Group
+                  DE[[i]] = FindMarkers(tmp,features = selected.genes, ident.1 = A, ident.2 = B, logfc.threshold = 0,min.pct =0.01 )
+            }, error = function(e){print(e)})
+      }
+      
+      return(DE)
+}
+
+DE = list()
+Idents(Pelka) = Pelka$Identity.Celltype4
+for(i in levels( Idents(Pelka)  ) ){
+      print(i)
+      tmp = subset(Pelka, idents = i)
+      DE[[i]] = FullDE(tmp,Group = "PTGER4.Group.Celltype4", Batch = "PatientTypeID",Genes = selected.genes )
+}
+
+df = data.frame()
+for(i in names(DE)){
+  tmp = names(DE[[i]]) 
+  for(j in tmp ){
+      df1 = DE[[i]][[j]] %>% as_tibble(rownames = "Genes")
+      df1$Cluster = i
+      df1$Dataset = j
+      df = rbind(df,df1)
+      }
+}
+df$Type = "Normal"
+df$Type[grep("_T",df$Dataset)] = "Tumor"
+
+DE$df = df
+
+
+tmp1 = Pelka[[]] %>% dplyr::select(orig.ident,PatientTypeID,Sex,SPECIMEN_TYPE,MMRStatus) %>% as_tibble() 
+tmp1 = tmp1[!duplicated(tmp1$PatientTypeID),] %>% as.data.frame()
+rownames(tmp1) = tmp1$PatientTypeID
+df$Sex = tmp1[df$Dataset,"Sex"]
+df$MMRStatus = tmp1[df$Dataset,"MMRStatus"]
+
+df2 = data.frame()
+for(i in  df$Cluster %>% unique() ){
+  tmp = subset(Pelka, Identity.Celltype4 == i )
+  tmp2 = table(tmp$PatientTypeID,tmp$PTGER4.Group.Celltype4)
+  tmp2 = tmp2 %>% as.data.frame() %>% filter(Var2 == "High") %>% dplyr::select(Var1,Freq)
+  tmp2$Cluster = i
+  df2 = rbind(df2,tmp2)
+  
+}
+colnames(df2)[1:2] = c("Dataset","Frequency")
+df = left_join(df,df2) # by = c("Dataset, Cluster") )
+
+DE$df = df
+saveRDS(DE,"~/Library/CloudStorage/OneDrive-Personal/Documents_Onedrive/RStudioProject/scRNA.Public/Pelka/DE.AllGenes.Pelka.PTGER4.Group.Celltype4.240404.rds" )
+```
+
+
+##Sample sorting
+```{r}
+PelkaDF = list("Index" = list())
+PelkaDF$Index$TIM  = DE$df %>% filter(Genes == "PTGER4") %>% filter(Cluster == "TIM") %>% filter(Type == "Tumor") 
+colnames(PelkaDF$Index$TIM)[3] = c("PTGER4_FC")
+```
+
+###Sort RPs
+####by RPs HClust
+```{r}
+selected.genes = unlist( GeneSet$DE$Ribosome ) %>% unique()
+selected.cluster = c("TIM")
+df1 = filter(df, Genes %in% selected.genes )  %>% filter(Cluster %in% selected.cluster)  %>% filter(Type == "Tumor") 
+tmp1 = df1 %>% dplyr::select(Genes, avg_log2FC,Dataset) %>% spread(key = Genes, value = avg_log2FC) %>% as.data.frame()
+rownames(tmp1) = tmp1$Dataset
+tmp1 = tmp1 %>% dplyr::select(-Dataset)
+
+tmp1 = tmp1[,complete.cases(t(tmp1))]
+tmp2 = heatmap(scale(tmp1) )
+tmp1 = data.frame("Dataset"= rownames(tmp1)[tmp2$rowInd],
+                  "hClustRank" = 1:length(tmp2$rowInd))
+PelkaDF$Index$TIM = left_join(PelkaDF$Index$TIM, tmp1)
+```
+
+####by RPs avg FC
+```{r}
+selected.genes = unlist( GeneSet$DE$Ribosome ) %>% unique()
+selected.cluster = c("TIM")
+df1 = filter(df, Genes %in% selected.genes )  %>% filter(Cluster %in% selected.cluster)  %>% filter(Type == "Tumor") 
+tmp1 = df1 %>% dplyr::select(Genes, avg_log2FC,Dataset) %>% spread(key = Genes, value = avg_log2FC) %>% as.data.frame()
+rownames(tmp1) = tmp1$Dataset
+tmp1 = tmp1 %>% dplyr::select(-Dataset)
+tmp1 = tmp1[,complete.cases(t(tmp1))]
+tmp1 = data.frame("Dataset" = names(rowMeans(tmp1)),
+                  "RPs_FC" = rowMeans(tmp1))
+PelkaDF$Index$TIM = left_join(PelkaDF$Index$TIM, tmp1) #%>% arrange(Avg_FC)
+
+```
+
+#DE (Celltype3)
+##Selected clusters x All Genes
+```{r}
+selected.genes = rownames(Pelka)
+FullDE <- function(Obj,Group = "PTGER4.Group.Celltype2", Batch = "ID",Genes = selected.genes,A = "High", B = "Low"){
+      DE = list()
+      Idents(Obj) = Batch
+      for(i in unique(Obj[[]][,Batch]) ){
+            tmp = subset(Obj, idents = i)
+            print(paste0(i," : ", ncol(tmp), " Cells"))
+            tryCatch({
+                  Idents(tmp) = Group
+                  DE[[i]] = FindMarkers(tmp,features = selected.genes, ident.1 = A, ident.2 = B, logfc.threshold = 0,min.pct =0.01 )
+            }, error = function(e){print(e)})
+      }
+      
+      return(DE)
+}
+
+DE = list()
+Idents(Pelka) = Pelka$Identity.Celltype3
+summary(Idents(Pelka))
+selected.cluster= c("CD8 T cell","CD4 T cell","TAN-PMN","TIM_VCAN","TIM_C1QA")
+for(i in selected.cluster ) {
+      print(i)
+      tmp = subset(Pelka, idents = i)
+      DE[[i]] = FullDE(tmp,Group = "PTGER4.Group.Celltype3", Batch = "PatientTypeID",Genes = selected.genes )
+}
+
+df = data.frame()
+for(i in names(DE)){
+  tmp = names(DE[[i]]) 
+  for(j in tmp ){
+      df1 = DE[[i]][[j]] %>% as_tibble(rownames = "Genes")
+      df1$Cluster = i
+      df1$Dataset = j
+      df = rbind(df,df1)
+      }
+}
+df$Type = "Normal"
+df$Type[grep("_T",df$Dataset)] = "Tumor"
+
+DE$df = df
+
+tmp1 = Pelka[[]] %>% dplyr::select(orig.ident,PatientTypeID,Sex,SPECIMEN_TYPE,MMRStatus) %>% as_tibble() 
+tmp1 = tmp1[!duplicated(tmp1$PatientTypeID),] %>% as.data.frame()
+rownames(tmp1) = tmp1$PatientTypeID
+df$Sex = tmp1[df$Dataset,"Sex"]
+df$MMRStatus = tmp1[df$Dataset,"MMRStatus"]
+
+df2 = data.frame()
+for(i in  df$Cluster %>% unique() ){
+  tmp = subset(Pelka, Identity.Celltype3 == i )
+  tmp2 = table(tmp$PatientTypeID,tmp$PTGER4.Group.Celltype3)
+  tmp2 = tmp2 %>% as.data.frame() %>% filter(Var2 == "High") %>% dplyr::select(Var1,Freq)
+  tmp2$Cluster = i
+  df2 = rbind(df2,tmp2)
+  
+}
+colnames(df2)[1:2] = c("Dataset","Frequency")
+df = left_join(df,df2) # by = c("Dataset, Cluster") )
+
+DE$df = df
+saveRDS(DE,"~/Library/CloudStorage/OneDrive-Personal/Documents_Onedrive/RStudioProject/scRNA.Public/Pelka/DE.AllGenes.Pelka-Some.PTGER4.Group.Celltype3.240404.rds" )
+```
+
+##Sample sorting
+```{r}
+PelkaDF$Index$TIM_C1QA  = DE$df %>% filter(Genes == "PTGER4") %>% filter(Cluster == "TIM_C1QA") %>% filter(Type == "Tumor") 
+colnames(PelkaDF$Index$TIM_C1QA)[3] = c("PTGER4_FC")
+PelkaDF$Index$TIM_C1QA
+```
+
+###Sort RPs
+####by RPs avg FC
+```{r}
+selected.genes = unlist( GeneSet$DE$Ribosome ) %>% unique()
+selected.cluster = c("TIM_C1QA")
+df1 = filter(df, Genes %in% selected.genes )  %>% filter(Cluster %in% selected.cluster)  %>% filter(Type == "Tumor") 
+tmp1 = df1 %>% dplyr::select(Genes, avg_log2FC,Dataset) %>% spread(key = Genes, value = avg_log2FC) %>% as.data.frame()
+rownames(tmp1) = tmp1$Dataset
+tmp1 = tmp1 %>% dplyr::select(-Dataset)
+tmp1 = tmp1[,complete.cases(t(tmp1))]
+tmp1 = data.frame("Dataset" = names(rowMeans(tmp1)),
+                  "RPs_FC" = rowMeans(tmp1))
+PelkaDF$Index$TIM_C1QA = left_join(PelkaDF$Index$TIM_C1QA, tmp1) #%>% arrange(Avg_FC)
+
+```
+
+#DE Heatmap 
+```{r}
+
+#DE = readRDS("~/Library/CloudStorage/OneDrive-Personal/Documents_Onedrive/RStudioProject/scRNA.Public/Pelka/DE.AllGenes.Pelka-Some.PTGER4.Group.Celltype3.240404.rds" )
+PelkaDF$Index$TIM
+```
+
+##CD8
+```{r}
+DE = readRDS("~/Library/CloudStorage/OneDrive-Personal/Documents_Onedrive/RStudioProject/scRNA.Public/Pelka/DE.AllGenes.Pelka.PTGER4.Group.Celltype4.240404.rds" )
+df = DE$df
+df$Cluster %>% unique()
+selected.cluster = c("CD8 T cell")
+
+for(i in c("ETC.Ref2","Ribosome") ){
+  selected.genes = unlist( GeneSet$DE[[i]] ) %>% unique()
+  df1 = filter(df, Genes %in% selected.genes )  %>% filter(Cluster %in% selected.cluster) %>% filter(Type == "Tumor")
+  df1 = pCat(df1, "p_val_adj")
+  df1 = GeneGroup(df1, GeneSet$DE[[i]])
+  a = max(abs(df1$avg_log2FC))+0.2 
+  #a=1.8
+  plot = ggplot(df1, aes(y = Dataset , x = Genes  ) ) + facet_grid(Cluster + MMRStatus ~ Set, scales = "free", space="free", switch = "y") +
+    theme_classic() + 
+    geom_tile(color = "white",aes(fill =avg_log2FC)) +  
+    scale_fill_gradientn(values =  c(0, 0.45 , 0.5 ,  5.5 , 1 ) ,
+                          colours = Col.HiLow.9Shades,
+                          limits = c(-a,a))+
+    theme(plot.title = element_blank(),
+          axis.title = element_blank(),
+          axis.text.x = element_text(size =5, family = "Arial", color = "black", face = "italic",angle = 90, hjust =1, vjust =0.3),
+          axis.text.y = element_text(size =5, family = "Arial", color = "black"),
+          axis.line = element_line(colour = 'black', size = 0.25),
+          axis.ticks = element_line(colour = 'black', size = 0.15),
+          axis.ticks.length = unit(0.05,"cm"),
+          strip.background = element_rect(fill = "white",size = 0.25),
+          strip.placement = "outside",
+          #strip.text.y = element_text(size =5, family = "Arial",colour = "black"),
+          strip.text = element_text(size =5, family = "Arial",colour = "black",
+                                      margin = margin(t = 0.1, r = 0, b = 0.1, l = 0, unit = "cm") ),
+          legend.key.size = unit(0.1, 'in'),
+          legend.title = element_text(size = 5),
+          legend.text = element_text(size=4),
+          legend.position = "bottom"
+          )
+  PNG(paste0("Pelka.Heatmap.CD8.Sort_HighNumber-MMR.",i), h = 4.5, w = c(1.5 + (length(unique(df1$Genes))*0.06) ))
+  print(plot)
+  dev.off()
+}
+
+
+```
+
+##TIM
+```{r}
+DE = readRDS("~/Library/CloudStorage/OneDrive-Personal/Documents_Onedrive/RStudioProject/scRNA.Public/Pelka/DE.AllGenes.Pelka.PTGER4.Group.Celltype4.240404.rds" )
+df = DE$df
+selected.cluster = c("TIM")
+for(j in c(0,10,20)){
+for(i in c("Ribosome") ){
+  selected.genes = unlist( GeneSet$DE[[i]] ) %>% unique()
+  df1 = filter(df, Genes %in% selected.genes )  %>% filter(Cluster %in% selected.cluster)  %>% filter(Type == "Tumor") %>% filter(Frequency > j)
+  #tmp1 = arrange(PelkaDF$Index$TIM ,RPs_FC) 
+  tmp1 = arrange(PelkaDF$Index$TIM, PTGER4_FC)
+  df1$Dataset = factor(df1$Dataset, levels = tmp1$Dataset)
+  #df1 = pCat(df1, "p_val_adj")
+  df1 = GeneGroup(df1, GeneSet$DE[[i]])
+  a = max(abs(df1$avg_log2FC))+0.2 
+  #a=1.8
+  plot = ggplot(df1, aes(y = Dataset , x = Genes  ) ) + facet_grid(Type+Cluster+MMRStatus+Sex ~ Set, scales = "free", space="free", switch = "y") +
+    theme_classic() + 
+    geom_tile(color = "white",aes(fill =avg_log2FC)) +  
+    scale_fill_gradientn(values =  c(0, 0.45 , 0.5 ,  5.5 , 1 ) ,
+                          colours = Col.HiLow.9Shades,
+                          limits = c(-a,a))+
+    theme(plot.title = element_blank(),
+          axis.title = element_blank(),
+          axis.text.x = element_text(size =5, family = "Arial", color = "black", face = "italic",angle = 90, hjust =1, vjust =0.3),
+          axis.text.y = element_text(size =5, family = "Arial", color = "black"),
+          axis.line = element_line(colour = 'black', size = 0.25),
+          axis.ticks = element_line(colour = 'black', size = 0.15),
+          axis.ticks.length = unit(0.05,"cm"),
+          strip.background = element_rect(fill = "white",size = 0.25),
+          strip.placement = "outside",
+          #strip.text.y = element_text(size =5, family = "Arial",colour = "black"),
+          strip.text = element_text(size =5, family = "Arial",colour = "black",
+                                      margin = margin(t = 0.1, r = 0, b = 0.1, l = 0, unit = "cm") ),
+          legend.key.size = unit(0.1, 'in'),
+          legend.title = element_text(size = 5),
+          legend.text = element_text(size=4),
+          legend.position = "bottom"
+          )
+  PNG(paste0("Pelka.Heatmap.TIM.Sort_PTGER4_FC.",i,".Minimum",j), h = 6, w = c(1.5 + (length(unique(df1$Genes))*0.06) ))
+  print(plot)
+  dev.off()
+}
+}
+```
+
+##TIM subset
+```{r}
+DE = readRDS("~/Library/CloudStorage/OneDrive-Personal/Documents_Onedrive/RStudioProject/scRNA.Public/Pelka/DE.AllGenes.Pelka-Some.PTGER4.Group.Celltype3.240404.rds" )
+
+df = DE$df
+selected.cluster = c("TIM_C1QA","TIM_VCAN")
+#for(k in selected.cluster){
+for(j in c(0)){
+for(i in c("Ribosome") ){
+  selected.genes = unlist( GeneSet$DE[[i]] ) %>% unique()
+  df1 = filter(df, Genes %in% selected.genes )  %>% filter(Cluster %in% selected.cluster)  %>% filter(Type == "Tumor") %>% filter(Frequency > j)
+  tmp1 = arrange(PelkaDF$Index$TIM_C1QA ,RPs_FC)
+  #df1$Dataset = factor(df1$Dataset, levels = tmp1$Dataset)
+  #df1 = pCat(df1, "p_val_adj")
+  df1 = GeneGroup(df1, GeneSet$DE[[i]])
+  a = max(abs(df1$avg_log2FC))+0.2 
+  #a=1.8
+  plot = ggplot(df1, aes(y = Dataset , x = Genes  ) ) + facet_grid(Type+Cluster ~ Set, scales = "free", space="free", switch = "y") +
+    theme_classic() + 
+    geom_tile(color = "white",aes(fill =avg_log2FC)) +  
+    scale_fill_gradientn(values =  c(0, 0.45 , 0.5 ,  5.5 , 1 ) ,
+                          colours = Col.HiLow.9Shades,
+                          limits = c(-a,a))+
+    theme(plot.title = element_blank(),
+          axis.title = element_blank(),
+          axis.text.x = element_text(size =5, family = "Arial", color = "black", face = "italic",angle = 90, hjust =1, vjust =0.3),
+          axis.text.y = element_text(size =5, family = "Arial", color = "black"),
+          axis.line = element_line(colour = 'black', size = 0.25),
+          axis.ticks = element_line(colour = 'black', size = 0.15),
+          axis.ticks.length = unit(0.05,"cm"),
+          strip.background = element_rect(fill = "white",size = 0.25),
+          strip.placement = "outside",
+          #strip.text.y = element_text(size =5, family = "Arial",colour = "black"),
+          strip.text = element_text(size =5, family = "Arial",colour = "black",
+                                      margin = margin(t = 0.1, r = 0, b = 0.1, l = 0, unit = "cm") ),
+          legend.key.size = unit(0.1, 'in'),
+          legend.title = element_text(size = 5),
+          legend.text = element_text(size=4),
+          legend.position = "bottom"
+          )
+  PNG(paste0("Pelka.Heatmap.",i,".Minimum",j), h = 6, w = c(1.5 + (length(unique(df1$Genes))*0.06) ))
+  print(plot)
+  dev.off()
+}
+}
+
+```
+
+```{r}
+Idents(Pelka) = Pelka$Identity.Celltype3
+tmp = subset(Pelka, Identity.Celltype3 == "TIM_C1QA")
+Idents(tmp) = tmp$PatientTypeID
+tmp1 = FindMarkers(tmp, ident.1 = c("C167_T","C162_T","C158_T"), ident.2 = c("C132_T","C134_T","C133_T"))
+selected.genes = tmp1 %>% arrange(desc(avg_log2FC)) %>% rownames()
+tmp
+
+table(TIM$PatientTypeID,TIM$TissueSite_detailed)
+```
+
+```{r}
+DotPlot(tmp,features = selected.genes[1:20]) + Dot_axis90A + Dot_scale2 + scale_PRainbow
+```
+
+
+#-----------
+
+```{r}
+
+```
+
+
+```{r}
+tmp1 = table(TIM$seurat_clusters,TIM$PatientTypeID)
+
+tmp1 = apply(tmp1,1,function(x) x/as.numeric(colSums(tmp1)) *100) %>% t() 
+write.csv(tmp1, "~/Library/CloudStorage/OneDrive-Personal/Documents_Onedrive/RStudioProject/scRNA.Public/Pelka/Fig/240402/PCT.Pelka_TIM.Celltype3.csv")
+
+table(TIM$Identity.Celltype3,TIM$PatientTypeID)
+```
+
